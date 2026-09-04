@@ -1,0 +1,33 @@
+# Configuração de exemplo para o zpl2pdf.
+# Uso: python -m zpl2pdf.cli --input examples/label_30x20mm.zpl --output out.pdf --config config.example.yaml
+#
+# Qualquer argumento passado explicitamente na linha de comando tem
+# prioridade sobre o valor definido aqui.
+
+sheet_size: A4          # preset (A4, Letter) ou "LARGURAxALTURA" em mm, ex: "100x150"
+orientation: portrait    # portrait ou landscape
+
+labels_per_page: 24       # etiqueta única: cópias/página. Múltiplas + multi_mode "paginate": etiquetas/página.
+pages: 3                    # quantas páginas gerar (só usado com etiqueta única; ignorado com múltiplas)
+
+# Só é necessário/usado quando o arquivo tem múltiplas etiquetas distintas:
+# "fit-one-page" (tudo em 1 página) ou "paginate" (usa labels_per_page acima).
+multi_mode: null
+
+margin_top: 10.0
+margin_bottom: 10.0
+margin_left: 10.0
+margin_right: 10.0
+
+gap_x: 2.0                # espaçamento horizontal entre etiquetas (mm)
+gap_y: 2.0                # espaçamento vertical entre etiquetas (mm)
+
+dpi: 203                  # resolução da impressora (203, 300, ...)
+
+stretch: false             # true = estica a etiqueta para preencher 100% da célula (pode distorcer)
+
+# Usado apenas quando a etiqueta ZPL não define ^PW/^LL:
+label_width: 63.5
+label_height: 38.1
+
+cache_dir: cache           # pasta de cache local de imagens renderizadas

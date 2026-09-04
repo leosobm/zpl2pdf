@@ -1,0 +1,6 @@
+^XA
+^FO20,20^A0N,30,30^FDDestinatario: Joao Silva^FS
+^FO20,60^A0N,25,25^FDRua Exemplo, 123 - Centro^FS
+^FO20,95^A0N,25,25^FDSao Paulo - SP^FS
+^FO20,130^A0N,25,25^FDCEP: 01000-000^FS
+^XZ

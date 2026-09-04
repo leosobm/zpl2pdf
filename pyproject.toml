@@ -1,0 +1,22 @@
+[project]
+name = "zpl2pdf"
+version = "0.1.0"
+description = "Converte arquivos ZPL em PDFs prontos para impressão, com controle total sobre o layout da folha."
+requires-python = ">=3.10"
+dependencies = [
+    "reportlab>=4.0",
+    "requests>=2.31",
+    "PyYAML>=6.0",
+    "Pillow>=10.0",
+    "streamlit>=1.35",
+]
+
+[project.scripts]
+zpl2pdf = "zpl2pdf.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["zpl2pdf"]
