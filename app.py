@@ -253,10 +253,24 @@ generate_clicked = col_generate.button("📄 Gerar PDF", disabled=not grid_ok, t
 renderer = LabelaryRenderer(cache=LabelCache(CACHE_DIR))
 
 
-def _render_all(labels_to_render: list[ZplLabel]) -> list:
+def _render_all(labels_to_render: list[ZplLabel], resolved: list[tuple[float, float]]) -> list:
+    """Renderiza uma lista de etiquetas, mostrando uma barra de progresso.
+
+    O rate limiting + retry com backoff do `LabelaryRenderer` pode deixar a
+    renderização bem mais lenta em arquivos com muitas etiquetas distintas
+    (não cacheadas ainda), então a barra evita a impressão de que o processo
+    travou.
+    """
+    total = len(labels_to_render)
+    progress_bar = st.progress(0.0, text=f"Renderizando etiqueta 0 de {total}...")
     rendered = []
-    for label, (w, h) in zip(labels_to_render, resolved_sizes):
-        rendered.append(renderer.render(label, dpmm, w, h))
+    try:
+        for i, (label, (w, h)) in enumerate(zip(labels_to_render, resolved), start=1):
+            progress_bar.progress((i - 1) / total, text=f"Renderizando etiqueta {i} de {total}...")
+            rendered.append(renderer.render(label, dpmm, w, h))
+            progress_bar.progress(i / total, text=f"Renderizando etiqueta {i} de {total}...")
+    finally:
+        progress_bar.empty()
     return rendered
 
 
@@ -267,17 +281,20 @@ if preview_clicked and engine is not None and labels is not None and sheet is no
                 rendered = renderer.render(labels[0], dpmm, *resolved_sizes[0])
             placements = engine.place_single(rendered, pages=1)
         elif multi_mode == "fit-one-page":
-            with st.spinner(f"Renderizando {len(labels)} etiqueta(s)..."):
-                rendered_labels = _render_all(labels)
+            rendered_labels = _render_all(labels, resolved_sizes)
             placements = engine.place_sequence(rendered_labels)
         else:
             preview_subset = labels[: int(labels_per_page)]
-            with st.spinner(f"Renderizando {len(preview_subset)} etiqueta(s) da 1ª página..."):
-                rendered_labels = _render_all(preview_subset)
+            rendered_labels = _render_all(preview_subset, resolved_sizes[: int(labels_per_page)])
             placements = engine.place_sequence(rendered_labels)
         st.session_state["preview_image"] = build_preview_image(sheet, placements)
     except RenderError as exc:
-        st.error(f"Falha ao renderizar via Labelary: {exc}")
+        st.error(
+            f"Falha ao renderizar via Labelary: {exc}\n\n"
+            "A prévia não foi gerada. Aguarde alguns instantes e tente novamente "
+            "— isso costuma acontecer quando o limite de requisições/segundo "
+            "do plano gratuito do Labelary é excedido."
+        )
 
 if "preview_image" in st.session_state:
     st.subheader("Prévia da 1ª página")
@@ -285,11 +302,11 @@ if "preview_image" in st.session_state:
 
 if generate_clicked and engine is not None and labels is not None and sheet is not None:
     try:
-        with st.spinner(f"Renderizando {len(labels)} etiqueta(s)..."):
-            if len(labels) == 1:
+        if len(labels) == 1:
+            with st.spinner("Renderizando etiqueta de referência..."):
                 rendered_single = renderer.render(labels[0], dpmm, *resolved_sizes[0])
-            else:
-                rendered_labels = _render_all(labels)
+        else:
+            rendered_labels = _render_all(labels, resolved_sizes)
 
         with st.spinner("Montando o PDF..."):
             if len(labels) == 1:
@@ -315,7 +332,13 @@ if generate_clicked and engine is not None and labels is not None and sheet is n
             "filename": output_name,
         }
     except RenderError as exc:
-        st.error(f"Falha ao renderizar via Labelary: {exc}")
+        st.error(
+            f"Falha ao renderizar via Labelary: {exc}\n\n"
+            "Nenhum PDF foi gerado (para evitar um arquivo incompleto). "
+            "Aguarde alguns instantes e tente novamente — isso costuma "
+            "acontecer quando o limite de requisições/segundo do plano "
+            "gratuito do Labelary é excedido."
+        )
     except (ConfigError, ValueError) as exc:
         st.error(f"Erro ao gerar o PDF: {exc}")
 

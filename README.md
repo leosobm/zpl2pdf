@@ -38,6 +38,22 @@ pip install -e .
 > A renderização da etiqueta usa a API pública do Labelary
 > (http://api.labelary.com) — é necessária conexão com a internet. Não há
 > instalação local de impressora/driver ZPL.
+>
+> **Limite de requisições (plano gratuito):** o plano gratuito do Labelary
+> aceita no máximo **3 requisições/segundo**. Para respeitar esse limite com
+> margem de segurança, `LabelaryRenderer` espaça as chamadas a ~2/s e, se
+> ainda assim receber HTTP 429, tenta novamente automaticamente com backoff
+> exponencial (1s, 2s, 4s, ... até 5 tentativas) antes de desistir. Na
+> prática, isso significa que **arquivos com muitas etiquetas distintas (não
+> cacheadas ainda) demoram mais para renderizar** — a interface web mostra
+> uma barra de progresso para deixar isso claro. Se uma etiqueta continuar
+> falhando após todas as tentativas, o processo para com uma mensagem
+> indicando qual etiqueta falhou, em vez de gerar um PDF incompleto; espere
+> um pouco e tente novamente. Para uso intenso (muitas etiquetas, muitos
+> arquivos), o Labelary também é distribuído como imagem Docker para
+> self-hosting (veja a documentação oficial do Labelary) — rodando sua
+> própria instância local, esse limite de requisições/segundo do plano
+> gratuito deixa de se aplicar.
 
 ## Uso básico
 
@@ -193,6 +209,13 @@ Isso abre a interface em `http://localhost:8501`. Fluxo de uso:
    só as etiquetas da 1ª página, sem gastar chamadas de API nas restantes.
 6. Clique em **"📄 Gerar PDF"** para montar todas as páginas e baixar o
    resultado pelo botão de download.
+
+Com várias etiquetas distintas ainda não cacheadas, uma barra de progresso
+("Renderizando etiqueta X de N...") acompanha a renderização — o rate
+limiting descrito acima pode deixar esse passo mais lento do que uma
+chamada por etiqueta, então a barra evita a impressão de que o app travou.
+Se alguma etiqueta falhar mesmo após as tentativas automáticas, nenhum PDF
+é gerado e uma mensagem indica exatamente qual etiqueta falhou.
 
 O cache local de imagens renderizadas (`cache/`) é compartilhado entre a
 CLI e a interface web, e cada etiqueta distinta é renderizada só uma vez
@@ -354,6 +377,11 @@ python -m zpl2pdf.cli --input examples\label_30x20mm.zpl --output saida.pdf --co
   renderizar a etiqueta; não há renderizador offline embutido (a interface
   `LabelRenderer` foi desenhada para permitir adicionar um no futuro sem
   alterar o resto do sistema).
+- O plano gratuito do Labelary limita a 3 requisições/segundo; arquivos com
+  muitas etiquetas distintas (não cacheadas) demoram mais para renderizar
+  por causa do rate limiting e do retry com backoff em caso de HTTP 429 (ver
+  seção de instalação acima). Para uso intenso, considere um Labelary
+  self-hosted via Docker, que não tem esse limite.
 - Com múltiplas etiquetas distintas, a escolha de orientação da grade
   (`calculate_grid`) usa o tamanho da **primeira** etiqueta do arquivo como
   referência; cada etiqueta é depois redimensionada individualmente com

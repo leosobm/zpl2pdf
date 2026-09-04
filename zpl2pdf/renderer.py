@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -35,6 +36,39 @@ _DPI_TO_DPMM = {
 
 class RenderError(Exception):
     """Erro ao renderizar uma etiqueta ZPL em imagem."""
+
+
+# O plano gratuito do Labelary aceita no máximo 3 requisições/segundo; usamos
+# uma margem de segurança abaixo disso por padrão.
+_DEFAULT_MAX_CALLS_PER_SECOND = 2.0
+
+
+class RateLimiter:
+    """Espaça chamadas para respeitar um limite de requisições/segundo.
+
+    Implementado como um "token bucket" de capacidade 1: cada `wait()`
+    bloqueia até que ao menos `1 / max_calls_per_second` segundos tenham se
+    passado desde a chamada anterior liberada. Thread-safe, então funciona
+    tanto para chamadas sequenciais quanto para chamadas feitas em paralelo
+    a partir de múltiplas threads.
+    """
+
+    def __init__(self, max_calls_per_second: float = _DEFAULT_MAX_CALLS_PER_SECOND):
+        if max_calls_per_second <= 0:
+            raise ValueError("max_calls_per_second deve ser > 0.")
+        self._min_interval = 1.0 / max_calls_per_second
+        self._lock = threading.Lock()
+        self._next_allowed_time = 0.0
+
+    def wait(self) -> None:
+        """Bloqueia (se necessário) até que a próxima chamada seja permitida."""
+        with self._lock:
+            now = time.monotonic()
+            delay = self._next_allowed_time - now
+            if delay > 0:
+                time.sleep(delay)
+                now = time.monotonic()
+            self._next_allowed_time = max(now, self._next_allowed_time) + self._min_interval
 
 
 def dpi_to_dpmm(dpi: int) -> int:
@@ -121,21 +155,32 @@ class LabelaryRenderer(LabelRenderer):
     """Renderiza etiquetas via a API pública do Labelary.
 
     http://api.labelary.com/v1/printers/{dpmm}dpmm/labels/{width}x{height}/{index}/
+
+    O plano gratuito do Labelary aceita no máximo 3 requisições/segundo, então
+    as chamadas são espaçadas por um `RateLimiter` (default: 2/s, com margem
+    de segurança) e um HTTP 429 é automaticamente reenviado com backoff
+    exponencial (até `max_retries` tentativas) antes de desistir.
     """
 
     BASE_URL = "http://api.labelary.com/v1/printers"
+
+    # Teto do backoff exponencial, para não esperar tempo demais numa única
+    # tentativa mesmo com max_retries alto.
+    _MAX_BACKOFF_SECONDS = 30.0
 
     def __init__(
         self,
         cache: Optional[LabelCache] = None,
         timeout_seconds: float = 15.0,
-        max_retries: int = 3,
-        retry_backoff_seconds: float = 1.5,
+        max_retries: int = 5,
+        retry_backoff_seconds: float = 1.0,
+        rate_limiter: Optional[RateLimiter] = None,
     ):
         self.cache = cache
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
         self.retry_backoff_seconds = retry_backoff_seconds
+        self.rate_limiter = rate_limiter or RateLimiter()
 
     def render(
         self,
@@ -171,9 +216,29 @@ class LabelaryRenderer(LabelRenderer):
             label_index=label.index,
         )
 
+    def _backoff_seconds(self, attempt: int, retry_after_header: Optional[str]) -> float:
+        """Backoff exponencial (1x, 2x, 4x, 8x, ... * retry_backoff_seconds), com teto.
+
+        Se o servidor informar `Retry-After`, respeitamos esse valor quando
+        for maior do que o backoff calculado.
+        """
+        exponential = min(
+            self.retry_backoff_seconds * (2 ** (attempt - 1)),
+            self._MAX_BACKOFF_SECONDS,
+        )
+        if retry_after_header:
+            try:
+                return max(exponential, float(retry_after_header))
+            except ValueError:
+                pass
+        return exponential
+
     def _request_with_retry(self, url: str, zpl_raw: str, label_index: int) -> bytes:
         last_error: Optional[Exception] = None
         for attempt in range(1, self.max_retries + 1):
+            # Espaça as chamadas para respeitar o limite de requisições/segundo
+            # do plano gratuito do Labelary (aplica-se também às retentativas).
+            self.rate_limiter.wait()
             try:
                 response = requests.post(
                     url,
@@ -193,14 +258,30 @@ class LabelaryRenderer(LabelRenderer):
                     self.max_retries,
                     exc,
                 )
+                backoff = self._backoff_seconds(attempt, None)
             else:
                 if response.status_code == 200:
                     return response.content
-                if response.status_code in (429, 500, 502, 503, 504):
+                if response.status_code == 429:
+                    last_error = RenderError(
+                        f"Labelary retornou HTTP 429 (limite de requisições excedido) "
+                        f"para etiqueta {label_index + 1}."
+                    )
+                    backoff = self._backoff_seconds(attempt, response.headers.get("Retry-After"))
+                    logger.warning(
+                        "Etiqueta %d: HTTP 429 (rate limit) na tentativa %d/%d — "
+                        "aguardando %.1fs antes de tentar novamente.",
+                        label_index + 1,
+                        attempt,
+                        self.max_retries,
+                        backoff,
+                    )
+                elif response.status_code in (500, 502, 503, 504):
                     last_error = RenderError(
                         f"Labelary retornou HTTP {response.status_code} "
                         f"para etiqueta {label_index + 1}: {response.text[:200]}"
                     )
+                    backoff = self._backoff_seconds(attempt, None)
                     logger.warning(
                         "Etiqueta %d: HTTP %d na tentativa %d/%d.",
                         label_index + 1,
@@ -215,11 +296,12 @@ class LabelaryRenderer(LabelRenderer):
                     )
 
             if attempt < self.max_retries:
-                time.sleep(self.retry_backoff_seconds * attempt)
+                time.sleep(backoff)
 
         raise RenderError(
             f"Não foi possível renderizar a etiqueta {label_index + 1} após "
-            f"{self.max_retries} tentativas. Verifique sua conexão com a "
-            f"internet ou a disponibilidade da API do Labelary "
-            f"(http://api.labelary.com). Último erro: {last_error}"
+            f"{self.max_retries} tentativas — desistindo para não gerar um PDF "
+            f"incompleto. Verifique sua conexão com a internet ou a "
+            f"disponibilidade da API do Labelary (http://api.labelary.com) e "
+            f"tente novamente mais tarde. Último erro: {last_error}"
         )
