@@ -14,6 +14,14 @@ Rotas:
 Cada rota recebe o arquivo ZPL como multipart (`file`) e os parâmetros de
 layout/impressão como campos de formulário (ver `_params_from_request`).
 
+Em produção (Vercel), essas rotas específicas não são de fato alcançadas —
+o runtime Python entrega ao WSGI o caminho de *destino* da reescrita
+(`/api/index`), não o caminho original. `index_dispatch` (POST /api/index)
+é o ponto de entrada real, despachando pela ação enviada no campo `action`
+do formulário. As rotas específicas continuam registradas porque
+funcionam normalmente em desenvolvimento local (`flask run`, sem
+reescrita nenhuma).
+
 Limitações do modelo serverless (ver seção "Deploy no Vercel" do README):
 - Sem progresso em tempo real por etiqueta (a função só responde ao final).
 - Timeout de função: arquivos com muitas etiquetas distintas ainda não
@@ -174,6 +182,33 @@ def generate_route() -> Response:
         mimetype="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{output_name}"'},
     )
+
+
+_ACTIONS = {
+    "count": count_route,
+    "analyze": analyze_route,
+    "preview": preview_route,
+    "generate": generate_route,
+}
+
+
+@app.route("/api/index", methods=["POST"])
+def index_dispatch() -> Response:
+    """Ponto de entrada único usado em produção.
+
+    `vercel.json` reescreve `/api/count`, `/api/analyze`, `/api/preview` e
+    `/api/generate` para `/api/index` — mas o runtime Python da Vercel
+    entrega ao WSGI o caminho de *destino* da reescrita (`/api/index`), não
+    o caminho original solicitado pelo navegador. Por isso as rotas
+    específicas acima nunca batem em produção (só localmente, via
+    `flask run`, onde não há reescrita nenhuma). O frontend (`app.js`)
+    manda qual ação quer no campo `action` do formulário; despachamos para
+    a mesma função usada pela rota específica correspondente."""
+    action = request.form.get("action", "")
+    handler = _ACTIONS.get(action)
+    if handler is None:
+        return jsonify({"error": f"Ação desconhecida ou ausente: {action!r}"}), 400
+    return handler()
 
 
 # Serve o frontend estático só para desenvolvimento local com `flask run` —

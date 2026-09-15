@@ -137,6 +137,14 @@
   }
 
   function apiCall(path, formData) {
+    // Em produção (Vercel), vercel.json reescreve /api/* para /api/index, e o
+    // runtime entrega ao Flask o caminho de destino, não o original — por
+    // isso mandamos a ação desejada também como campo do formulário, que o
+    // dispatcher em /api/index usa para decidir o que fazer. Localmente
+    // (flask run, sem reescrita), a rota específica já resolve sozinha e
+    // esse campo extra é só ignorado.
+    const action = path.replace(/^\/api\//, "");
+    formData.append("action", action);
     return fetch(path, { method: "POST", body: formData });
   }
 
