@@ -1,0 +1,5 @@
+# Dependências extras só para desenvolvimento local: rodar a UI Streamlit
+# e a suíte de testes. NÃO usado pela função serverless do Vercel (que lê
+# apenas requirements.txt, mantido enxuto de propósito).
+pytest>=8.0
+streamlit>=1.35

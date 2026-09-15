@@ -29,6 +29,16 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+`requirements.txt` traz só o que a aplicação usa em runtime (CLI + API —
+reportlab, requests, PyYAML, Pillow, Flask); é o mesmo arquivo que a função
+serverless do Vercel instala, então é mantido enxuto de propósito. Para
+rodar a UI Streamlit localmente ou a suíte de testes, instale também
+`requirements-dev.txt`:
+
+```powershell
+pip install -r requirements.txt -r requirements-dev.txt
+```
+
 (Opcional) instalar como pacote com o comando `zpl2pdf` disponível no PATH:
 
 ```powershell
@@ -179,7 +189,7 @@ os mesmos módulos (`parser`, `renderer`, `layout`, `pdf_builder`) — nenhuma
 lógica é duplicada, só a orquestração e a apresentação mudam.
 
 ```powershell
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements-dev.txt
 streamlit run app.py
 ```
 
@@ -259,10 +269,14 @@ vercel --prod           # deploy de produção
 ```
 
 Ou conecte o repositório GitHub ao Vercel pelo dashboard (Import Project) —
-o Vercel detecta `vercel.json` e `api/index.py` automaticamente. As
-dependências da função ficam isoladas em [`api/requirements.txt`](api/requirements.txt)
-(Flask, reportlab, Pillow, requests) — deliberadamente sem Streamlit/pytest,
-que só são necessários para desenvolvimento local.
+o Vercel detecta `vercel.json` e `api/index.py` automaticamente. A Vercel
+instala as dependências Python a partir do [`requirements.txt`](requirements.txt)
+da **raiz** do projeto (não de um `requirements.txt` dentro de `api/` — a
+função só encontra o da raiz), por isso ele é mantido enxuto (Flask,
+reportlab, Pillow, requests, PyYAML) e Streamlit/pytest ficam à parte em
+[`requirements-dev.txt`](requirements-dev.txt), só para desenvolvimento local.
+`vercel.json` também declara `includeFiles: "zpl2pdf/**"` para garantir que
+o pacote `zpl2pdf/` (fora da pasta `api/`) vá junto no bundle da função.
 
 ### Limitações do modelo serverless
 
