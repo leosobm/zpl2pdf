@@ -1,8 +1,9 @@
 """Interface web (Streamlit) para o zpl2pdf.
 
-Reutiliza os mesmos módulos da CLI (parser, renderer, layout, pdf_builder) —
-nenhuma lógica de parsing/renderização/layout é duplicada aqui, apenas a
-orquestração e a apresentação.
+Reutiliza a mesma orquestração de `zpl2pdf/webapi.py` (compartilhada com a
+API serverless do Vercel em `api/index.py`) — nenhuma lógica de
+parsing/renderização/layout/grade é duplicada aqui, só a apresentação e a
+leitura dos widgets da sidebar.
 
 Detecta automaticamente o tipo de arquivo enviado:
 
@@ -19,48 +20,41 @@ Rodar com: streamlit run app.py
 
 from __future__ import annotations
 
-import io
-import math
 from pathlib import Path
 from typing import Optional
 
 import streamlit as st
-from PIL import Image
 
-from zpl2pdf.config import ConfigError, SheetConfig, resolve_sheet_size
-from zpl2pdf.layout import LOW_SCALE_WARNING_THRESHOLD, LayoutEngine, calculate_grid, resolve_label_size_mm
-from zpl2pdf.parser import ZplLabel, ZplParseError, parse_zpl_content
-from zpl2pdf.pdf_builder import build_pdf
-from zpl2pdf.renderer import LabelCache, LabelaryRenderer, RenderError, dpi_to_dpmm
+from zpl2pdf.config import ConfigError
+from zpl2pdf.parser import ZplParseError, parse_zpl_content
+from zpl2pdf.renderer import RenderError
+from zpl2pdf.webapi import RenderParams, analyze, render_output_pdf, render_preview
 
 CACHE_DIR = "cache"
 
 st.set_page_config(page_title="zpl2pdf", page_icon="🏷️", layout="wide")
 
 
-def build_preview_image(sheet: SheetConfig, placements, target_width_px: int = 700) -> Image.Image:
-    """Monta uma imagem raster da 1ª página, só para conferência visual do layout."""
-    scale = target_width_px / sheet.width_mm
-    height_px = max(1, round(sheet.height_mm * scale))
-    canvas = Image.new("RGB", (target_width_px, height_px), "white")
-
-    for placement in placements:
-        if placement.page_index != 0:
-            continue
-        label_img = Image.open(io.BytesIO(placement.rendered_label.png_bytes)).convert("RGB")
-        w_px = max(1, round(placement.width_mm * scale))
-        h_px = max(1, round(placement.height_mm * scale))
-        label_img = label_img.resize((w_px, h_px))
-        x_px = round(placement.x_mm * scale)
-        y_px = height_px - round((placement.y_mm + placement.height_mm) * scale)
-        canvas.paste(label_img, (x_px, y_px))
-
-    return canvas
-
-
 def reset_outputs() -> None:
     for key in ("pdf_bytes", "pdf_summary", "preview_image"):
         st.session_state.pop(key, None)
+
+
+def make_progress_callback():
+    """Cria uma barra de progresso do Streamlit e devolve um callback
+    `(i, total)` para passar a `render_preview`/`render_output_pdf`.
+
+    O rate limiting + retry com backoff do `LabelaryRenderer` pode deixar a
+    renderização bem mais lenta em arquivos com muitas etiquetas distintas
+    (não cacheadas ainda), então a barra evita a impressão de que o processo
+    travou.
+    """
+    progress_bar = st.progress(0.0, text="Renderizando etiqueta 0...")
+
+    def on_progress(i: int, total: int) -> None:
+        progress_bar.progress((i - 1) / total, text=f"Renderizando etiqueta {i} de {total}...")
+
+    return progress_bar, on_progress
 
 
 st.title("🏷️ zpl2pdf — Conversor de ZPL para PDF")
@@ -79,8 +73,9 @@ if sheet_size_choice == "Custom":
     c1, c2 = st.sidebar.columns(2)
     sheet_width_mm = c1.number_input("Largura folha (mm)", min_value=10.0, value=210.0, step=1.0)
     sheet_height_mm = c2.number_input("Altura folha (mm)", min_value=10.0, value=297.0, step=1.0)
+    sheet_size = f"{sheet_width_mm}x{sheet_height_mm}"
 else:
-    sheet_width_mm, sheet_height_mm = resolve_sheet_size(sheet_size_choice)
+    sheet_size = sheet_size_choice
 
 orientation = st.sidebar.selectbox(
     "Orientação", ["portrait", "landscape"], format_func=lambda v: "Retrato" if v == "portrait" else "Paisagem"
@@ -129,109 +124,91 @@ if st.session_state.get("_last_file_id") != file_id:
     reset_outputs()
     st.session_state["_last_file_id"] = file_id
 
-labels: Optional[list[ZplLabel]] = None
+content: Optional[str] = None
+num_labels: Optional[int] = None
 if uploaded_file is not None:
     try:
         content = uploaded_file.getvalue().decode("utf-8", errors="replace")
-        labels = parse_zpl_content(content)
-        if len(labels) == 1:
+        num_labels = len(parse_zpl_content(content))
+        if num_labels == 1:
             st.success(f"✅ Etiqueta única detectada em **{uploaded_file.name}**.")
         else:
-            st.success(f"✅ **{len(labels)}** etiquetas distintas detectadas em **{uploaded_file.name}**.")
+            st.success(f"✅ **{num_labels}** etiquetas distintas detectadas em **{uploaded_file.name}**.")
     except ZplParseError as exc:
         st.error(f"Erro ao interpretar o ZPL: {exc}")
 
 # ---------------------------------------------------------------------------
-# Monta a folha.
+# Quantidade/distribuição (os widgets aqui alimentam RenderParams abaixo).
 # ---------------------------------------------------------------------------
-sheet: Optional[SheetConfig] = None
-if labels:
-    try:
-        sheet = SheetConfig(
-            width_mm=sheet_width_mm,
-            height_mm=sheet_height_mm,
-            orientation=orientation,
-            margin_top_mm=margin_top,
-            margin_bottom_mm=margin_bottom,
-            margin_left_mm=margin_left,
-            margin_right_mm=margin_right,
-            gap_x_mm=gap_x,
-            gap_y_mm=gap_y,
-        )
-    except ConfigError as exc:
-        st.warning(f"⚠️ {exc}")
-
-dpmm = dpi_to_dpmm(int(dpi))
-
-# ---------------------------------------------------------------------------
-# Resolve o tamanho de TODAS as etiquetas (sem renderizar — não gasta API).
-# ---------------------------------------------------------------------------
-resolved_sizes: Optional[list[tuple[float, float]]] = None
-if labels and sheet is not None:
-    try:
-        resolved_sizes = [
-            resolve_label_size_mm(label, dpmm, fallback_width_mm, fallback_height_mm)
-            for label in labels
-        ]
-    except ConfigError as exc:
-        st.warning(f"⚠️ {exc}")
-
-engine: Optional[LayoutEngine] = None
-cols = rows = 0
 multi_mode: Optional[str] = None
 labels_per_page = 1
 pages = 1
-computed_pages = 1
 
-if labels and sheet is not None and resolved_sizes is not None:
-    ref_width_mm, ref_height_mm = resolved_sizes[0]
+if num_labels == 1:
+    # ------------------------------------------------------------
+    # Tipo 1: etiqueta única repetida.
+    # ------------------------------------------------------------
+    st.subheader("Quantidade")
+    qc1, qc2 = st.columns(2)
+    labels_per_page = qc1.number_input("Etiquetas por página", min_value=1, value=12, step=1)
+    pages = qc2.number_input("Número de páginas", min_value=1, value=1, step=1)
+elif num_labels is not None and num_labels > 1:
+    # ------------------------------------------------------------
+    # Tipo 2: múltiplas etiquetas distintas — escolher o modo.
+    # ------------------------------------------------------------
+    st.subheader("Como distribuir as etiquetas")
+    mode_label = st.radio(
+        "Modo",
+        options=["Caber tudo em 1 página", "Distribuir em várias páginas"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    multi_mode = "fit-one-page" if mode_label == "Caber tudo em 1 página" else "paginate"
 
-    if len(labels) == 1:
-        # ------------------------------------------------------------
-        # Tipo 1: etiqueta única repetida.
-        # ------------------------------------------------------------
-        st.subheader("Quantidade")
-        qc1, qc2 = st.columns(2)
-        labels_per_page = qc1.number_input("Etiquetas por página", min_value=1, value=12, step=1)
-        pages = qc2.number_input("Número de páginas", min_value=1, value=1, step=1)
-        grid_count = int(labels_per_page)
+    if multi_mode == "fit-one-page":
+        st.caption(f"Grade dimensionada para as {num_labels} etiquetas distintas, em 1 página.")
     else:
-        # ------------------------------------------------------------
-        # Tipo 2: múltiplas etiquetas distintas — escolher o modo.
-        # ------------------------------------------------------------
-        st.subheader("Como distribuir as etiquetas")
-        mode_label = st.radio(
-            "Modo",
-            options=["Caber tudo em 1 página", "Distribuir em várias páginas"],
-            horizontal=True,
-            label_visibility="collapsed",
+        labels_per_page = st.number_input(
+            "Etiquetas por página", min_value=1, max_value=num_labels, value=min(6, num_labels), step=1
         )
-        multi_mode = "fit-one-page" if mode_label == "Caber tudo em 1 página" else "paginate"
 
-        if multi_mode == "fit-one-page":
-            grid_count = len(labels)
-            st.caption(f"Grade dimensionada para as {len(labels)} etiquetas distintas, em 1 página.")
-        else:
-            labels_per_page = st.number_input(
-                "Etiquetas por página", min_value=1, max_value=len(labels), value=min(6, len(labels)), step=1
-            )
-            grid_count = int(labels_per_page)
-            computed_pages = math.ceil(len(labels) / grid_count)
-            st.caption(f"📄 Serão geradas **{computed_pages}** página(s) para cobrir as {len(labels)} etiquetas.")
+params: Optional[RenderParams] = None
+if content is not None and num_labels is not None:
+    params = RenderParams(
+        sheet_size=sheet_size,
+        orientation=orientation,
+        margin_top_mm=margin_top,
+        margin_bottom_mm=margin_bottom,
+        margin_left_mm=margin_left,
+        margin_right_mm=margin_right,
+        gap_x_mm=gap_x,
+        gap_y_mm=gap_y,
+        dpi=int(dpi),
+        fallback_width_mm=fallback_width_mm,
+        fallback_height_mm=fallback_height_mm,
+        stretch=bool(stretch),
+        labels_per_page=int(labels_per_page),
+        pages=int(pages),
+        multi_mode=multi_mode,
+    )
 
+# ---------------------------------------------------------------------------
+# Calcula a grade/escala (sem gastar chamadas ao Labelary).
+# ---------------------------------------------------------------------------
+analysis = None
+if params is not None:
     try:
-        cols, rows = calculate_grid(grid_count, sheet, ref_width_mm, ref_height_mm)
-        engine = LayoutEngine(sheet, cols, rows, stretch=bool(stretch))
-        # pior escala entre TODAS as etiquetas do arquivo (o tamanho de célula é o
-        # mesmo em todas as páginas, então qualquer etiqueta pode ser o pior caso).
-        worst_scale = min(engine.fit_scale_for(w, h) for w, h in resolved_sizes)
-        scale_pct = worst_scale * 100
+        analysis = analyze(content, params)
+        scale_pct = analysis.scale * 100
+        if multi_mode == "paginate":
+            st.caption(f"📄 Serão geradas **{analysis.computed_pages}** página(s) para cobrir as {num_labels} etiquetas.")
         st.info(
-            f"📐 Grade calculada: **{cols} colunas x {rows} linhas** = {cols * rows} células · "
-            f"Célula: {engine.cell_width_mm:.1f}x{engine.cell_height_mm:.1f}mm · "
+            f"📐 Grade calculada: **{analysis.cols} colunas x {analysis.rows} linhas** = "
+            f"{analysis.cols * analysis.rows} células · "
+            f"Célula: {analysis.cell_width_mm:.1f}x{analysis.cell_height_mm:.1f}mm · "
             f"Pior escala: **{scale_pct:.0f}%** ({'esticada' if stretch else 'proporcional, centralizada'})"
         )
-        if worst_scale < LOW_SCALE_WARNING_THRESHOLD:
+        if analysis.low_scale_warning:
             st.warning(
                 f"⚠️ Ao menos uma etiqueta está sendo reduzida para **{scale_pct:.0f}%** do "
                 "tamanho original nessa grade. Em escalas abaixo de 50%, o código de barras "
@@ -239,9 +216,8 @@ if labels and sheet is not None and resolved_sizes is not None:
             )
     except ConfigError as exc:
         st.warning(f"⚠️ {exc}")
-        engine = None
 
-grid_ok = labels is not None and engine is not None
+grid_ok = analysis is not None
 
 # ---------------------------------------------------------------------------
 # Ações
@@ -250,44 +226,16 @@ col_preview, col_generate = st.columns(2)
 preview_clicked = col_preview.button("🔍 Prévia da 1ª página", disabled=not grid_ok)
 generate_clicked = col_generate.button("📄 Gerar PDF", disabled=not grid_ok, type="primary")
 
-renderer = LabelaryRenderer(cache=LabelCache(CACHE_DIR))
-
-
-def _render_all(labels_to_render: list[ZplLabel], resolved: list[tuple[float, float]]) -> list:
-    """Renderiza uma lista de etiquetas, mostrando uma barra de progresso.
-
-    O rate limiting + retry com backoff do `LabelaryRenderer` pode deixar a
-    renderização bem mais lenta em arquivos com muitas etiquetas distintas
-    (não cacheadas ainda), então a barra evita a impressão de que o processo
-    travou.
-    """
-    total = len(labels_to_render)
-    progress_bar = st.progress(0.0, text=f"Renderizando etiqueta 0 de {total}...")
-    rendered = []
+if preview_clicked and params is not None and content is not None:
+    progress_bar = None
     try:
-        for i, (label, (w, h)) in enumerate(zip(labels_to_render, resolved), start=1):
-            progress_bar.progress((i - 1) / total, text=f"Renderizando etiqueta {i} de {total}...")
-            rendered.append(renderer.render(label, dpmm, w, h))
-            progress_bar.progress(i / total, text=f"Renderizando etiqueta {i} de {total}...")
-    finally:
-        progress_bar.empty()
-    return rendered
-
-
-if preview_clicked and engine is not None and labels is not None and sheet is not None:
-    try:
-        if len(labels) == 1:
-            with st.spinner("Renderizando etiqueta de referência..."):
-                rendered = renderer.render(labels[0], dpmm, *resolved_sizes[0])
-            placements = engine.place_single(rendered, pages=1)
-        elif multi_mode == "fit-one-page":
-            rendered_labels = _render_all(labels, resolved_sizes)
-            placements = engine.place_sequence(rendered_labels)
+        if num_labels and num_labels > 1:
+            progress_bar, on_progress = make_progress_callback()
+            png_bytes = render_preview(content, params, cache_dir=CACHE_DIR, on_progress=on_progress)
         else:
-            preview_subset = labels[: int(labels_per_page)]
-            rendered_labels = _render_all(preview_subset, resolved_sizes[: int(labels_per_page)])
-            placements = engine.place_sequence(rendered_labels)
-        st.session_state["preview_image"] = build_preview_image(sheet, placements)
+            with st.spinner("Renderizando etiqueta de referência..."):
+                png_bytes = render_preview(content, params, cache_dir=CACHE_DIR, on_progress=None)
+        st.session_state["preview_image"] = png_bytes
     except RenderError as exc:
         st.error(
             f"Falha ao renderizar via Labelary: {exc}\n\n"
@@ -295,40 +243,41 @@ if preview_clicked and engine is not None and labels is not None and sheet is no
             "— isso costuma acontecer quando o limite de requisições/segundo "
             "do plano gratuito do Labelary é excedido."
         )
+    finally:
+        if progress_bar is not None:
+            progress_bar.empty()
 
 if "preview_image" in st.session_state:
     st.subheader("Prévia da 1ª página")
     st.image(st.session_state["preview_image"], use_container_width=False)
 
-if generate_clicked and engine is not None and labels is not None and sheet is not None:
+if generate_clicked and params is not None and content is not None and analysis is not None:
+    progress_bar = None
     try:
-        if len(labels) == 1:
-            with st.spinner("Renderizando etiqueta de referência..."):
-                rendered_single = renderer.render(labels[0], dpmm, *resolved_sizes[0])
+        output_name = Path(uploaded_file.name).stem + ".pdf"
+        tmp_path = Path(CACHE_DIR) / f"_tmp_{output_name}"
+
+        if num_labels and num_labels > 1:
+            progress_bar, on_progress = make_progress_callback()
+            total_pages = render_output_pdf(
+                content, params, tmp_path, cache_dir=CACHE_DIR, on_progress=on_progress
+            )
         else:
-            rendered_labels = _render_all(labels, resolved_sizes)
+            with st.spinner("Renderizando etiqueta de referência e montando o PDF..."):
+                total_pages = render_output_pdf(
+                    content, params, tmp_path, cache_dir=CACHE_DIR, on_progress=None
+                )
 
-        with st.spinner("Montando o PDF..."):
-            if len(labels) == 1:
-                placements = engine.place_single(rendered_single, int(pages))
-                total_labels = int(labels_per_page) * int(pages)
-            else:
-                placements = engine.place_sequence(rendered_labels)
-                total_labels = len(labels)
-
-            output_name = Path(uploaded_file.name).stem + ".pdf"
-            tmp_path = Path(CACHE_DIR) / f"_tmp_{output_name}"
-            total_pages = build_pdf(placements, sheet, tmp_path)
-            pdf_bytes = tmp_path.read_bytes()
-            tmp_path.unlink(missing_ok=True)
+        pdf_bytes = tmp_path.read_bytes()
+        tmp_path.unlink(missing_ok=True)
 
         st.session_state["pdf_bytes"] = pdf_bytes
         st.session_state["pdf_summary"] = {
-            "mode": "single" if len(labels) == 1 else multi_mode,
+            "mode": analysis.mode,
             "pages": total_pages,
-            "total_labels": total_labels,
-            "cols": cols,
-            "rows": rows,
+            "total_labels": analysis.total_labels_output,
+            "cols": analysis.cols,
+            "rows": analysis.rows,
             "filename": output_name,
         }
     except RenderError as exc:
@@ -341,6 +290,9 @@ if generate_clicked and engine is not None and labels is not None and sheet is n
         )
     except (ConfigError, ValueError) as exc:
         st.error(f"Erro ao gerar o PDF: {exc}")
+    finally:
+        if progress_bar is not None:
+            progress_bar.empty()
 
 if "pdf_bytes" in st.session_state:
     summary = st.session_state["pdf_summary"]

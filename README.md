@@ -222,6 +222,69 @@ CLI e a interface web, e cada etiqueta distinta é renderizada só uma vez
 (por hash do seu próprio conteúdo ZPL) — repetições e reaproveitamentos da
 prévia nunca disparam chamadas de API redundantes.
 
+## Deploy no Vercel
+
+Streamlit exige um processo de servidor persistente com WebSocket, que o
+Vercel (modelo serverless) não suporta. Por isso, para publicar no Vercel, a
+interface é uma reescrita independente — HTML/CSS/JS estático em
+[`public/`](public/) + uma API serverless Python em [`api/index.py`](api/index.py) —
+que reutiliza a mesma orquestração de [`zpl2pdf/webapi.py`](zpl2pdf/webapi.py)
+usada pela UI Streamlit (nenhuma lógica de parsing/renderização/layout é
+duplicada; só a apresentação muda). O `app.py`/Streamlit continua funcionando
+normalmente para quem preferir rodar localmente ou hospedar em outra
+plataforma (Streamlit Community Cloud, Render, Railway, Fly.io, ...).
+
+### Como funciona
+
+- `api/index.py`: um único app Flask (padrão comum de "Flask on Vercel")
+  expõe `POST /api/count` (conta etiquetas), `POST /api/analyze` (grade/escala,
+  sem chamar o Labelary), `POST /api/preview` (PNG da 1ª página) e
+  `POST /api/generate` (PDF final). `vercel.json` reescreve todo tráfego de
+  `/api/*` para esse arquivo; o Flask cuida do roteamento interno.
+- `public/index.html` + `public/app.js` + `public/style.css`: formulário
+  equivalente à sidebar do Streamlit, chamando os endpoints acima via
+  `fetch` — exibe a prévia numa `<img>` e dispara o download do PDF.
+- O cache por hash de conteúdo ZPL usa `/tmp` (único diretório gravável em
+  funções Vercel) — ainda evita renderizar duas vezes a mesma etiqueta
+  **dentro de uma mesma requisição**, mas não persiste de forma garantida
+  entre requisições/cold starts.
+
+### Publicar
+
+```powershell
+npm install -g vercel   # se ainda não tiver o CLI
+vercel login
+vercel                  # deploy de preview
+vercel --prod           # deploy de produção
+```
+
+Ou conecte o repositório GitHub ao Vercel pelo dashboard (Import Project) —
+o Vercel detecta `vercel.json` e `api/index.py` automaticamente. As
+dependências da função ficam isoladas em [`api/requirements.txt`](api/requirements.txt)
+(Flask, reportlab, Pillow, requests) — deliberadamente sem Streamlit/pytest,
+que só são necessários para desenvolvimento local.
+
+### Limitações do modelo serverless
+
+- **Timeout de função**: arquivos com muitas etiquetas distintas ainda não
+  cacheadas podem demorar mais do que o timeout do plano Vercel, por causa
+  do rate limiting de ~2 req/s ao Labelary (ex: 60 etiquetas distintas ≈ 30s
+  só de renderização, sem contar retries). `vercel.json` já configura
+  `maxDuration: 60` — ajuste para o teto do seu plano se precisar de mais
+  margem. Para arquivos muito grandes, considere a UI Streamlit (sem
+  timeout) ou um Labelary self-hosted via Docker.
+- **Tamanho do corpo da requisição**: funções Vercel têm um limite de
+  tamanho de upload bem menor do que arquivos ZPL com muitas imagens
+  embutidas (ex: o padrão `~DG`/`^XG` descrito nas limitações do parser mais
+  abaixo) podem atingir.
+- **Sem progresso em tempo real**: a versão web não tem a barra de progresso
+  por etiqueta que o Streamlit tem — funções Python clássicas no Vercel não
+  fazem streaming de resposta, então só um spinner genérico com estimativa
+  de tempo é mostrado durante a renderização.
+- **Sem autenticação**: o formulário fica publicamente acessível a quem
+  tiver a URL — adicione sua própria camada de autenticação/proteção se
+  isso for uma preocupação para o seu caso de uso.
+
 ## Argumentos da CLI
 
 | Argumento | Descrição | Default |
@@ -285,14 +348,17 @@ convertidos para pontos, na escala calculada.
 ## Arquitetura
 
 ```
-app.py                    # interface web (Streamlit) — reusa os módulos abaixo
+app.py                    # interface web (Streamlit) — reusa webapi.py
+public/                   # frontend estático da versão Vercel (HTML/CSS/JS)
+api/index.py              # API serverless (Vercel) — Flask, reusa webapi.py
 zpl2pdf/
 ├── parser.py       # separa etiquetas ^XA...^XZ e extrai ^PW/^LL/^JM
 ├── renderer.py       # LabelRenderer (interface) + LabelaryRenderer + cache em disco
 ├── layout.py          # calculate_grid + LayoutEngine (place_single / place_sequence)
 ├── pdf_builder.py     # desenha as etiquetas no PDF final via reportlab
 ├── config.py           # SheetConfig/PrintConfig, presets de folha, erros de config
-└── cli.py               # argparse + orquestração ponta a ponta
+├── webapi.py            # orquestração compartilhada por app.py e api/index.py
+└── cli.py               # argparse + orquestração ponta a ponta (própria, não usa webapi.py)
 ```
 
 Fluxo de dados: `.zpl` → `parser` separa em `List[ZplLabel]` (1 ou N blocos)

@@ -1,0 +1,199 @@
+:root {
+  --bg: #fafafa;
+  --panel-bg: #ffffff;
+  --border: #e0e0e0;
+  --text: #1a1a1a;
+  --muted: #6b6b6b;
+  --primary: #d6293e;
+  --primary-text: #ffffff;
+  --info-bg: #e7f1ff;
+  --info-text: #0b3d91;
+  --warning-bg: #fff4e0;
+  --warning-text: #7a4b00;
+  --error-bg: #fdecea;
+  --error-text: #7a1f14;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #16181c;
+    --panel-bg: #1f2227;
+    --border: #33363c;
+    --text: #f0f0f0;
+    --muted: #a0a0a0;
+    --info-bg: #12263f;
+    --info-text: #a9c8ff;
+    --warning-bg: #3a2c0a;
+    --warning-text: #ffd28a;
+    --error-bg: #3a1613;
+    --error-text: #ffb4a8;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #16181c;
+  --panel-bg: #1f2227;
+  --border: #33363c;
+  --text: #f0f0f0;
+  --muted: #a0a0a0;
+  --info-bg: #12263f;
+  --info-text: #a9c8ff;
+  --warning-bg: #3a2c0a;
+  --warning-text: #ffd28a;
+  --error-bg: #3a1613;
+  --error-text: #ffb4a8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  padding-block: 24px;
+}
+
+header,
+main {
+  max-width: 760px;
+  margin-inline: auto;
+  padding-inline: 16px;
+}
+
+h1 {
+  font-size: 1.4rem;
+  margin-bottom: 4px;
+}
+
+h2 {
+  font-size: 1.05rem;
+  margin: 0 0 12px;
+}
+
+h3 {
+  font-size: 0.9rem;
+  color: var(--muted);
+  margin: 16px 0 6px;
+}
+
+.caption {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 4px 0 12px;
+}
+
+.panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.field {
+  margin-bottom: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.field-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.field label,
+.checkbox,
+.radio {
+  display: block;
+  font-size: 0.85rem;
+  margin-bottom: 4px;
+}
+
+.checkbox input,
+.radio input {
+  margin-right: 6px;
+}
+
+input[type="number"],
+input[type="text"],
+select {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+input[type="file"] {
+  width: 100%;
+  color: var(--text);
+}
+
+.status {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.info,
+.warning,
+.error {
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.88rem;
+  margin-bottom: 12px;
+}
+
+.info {
+  background: var(--info-bg);
+  color: var(--info-text);
+}
+
+.warning {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.error {
+  background: var(--error-bg);
+  color: var(--error-text);
+  white-space: pre-wrap;
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+button {
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-bg);
+  color: var(--text);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--primary);
+  color: var(--primary-text);
+  border-color: var(--primary);
+}
+
+#preview-container img {
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}

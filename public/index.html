@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>zpl2pdf</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>🏷️ zpl2pdf — Conversor de ZPL para PDF</h1>
+    <p class="caption">
+      Envie um arquivo .zpl. Com uma etiqueta, ela é repetida na grade. Com
+      várias etiquetas distintas, escolha como distribuí-las nas páginas.
+    </p>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>Arquivo</h2>
+      <input id="file-input" type="file" accept=".zpl,.txt" />
+      <p id="file-status" class="status"></p>
+    </section>
+
+    <section class="panel">
+      <h2>Configuração</h2>
+
+      <div class="field">
+        <label for="sheet-size">Tamanho da folha</label>
+        <select id="sheet-size">
+          <option value="A4">A4</option>
+          <option value="Letter">Letter</option>
+          <option value="Custom">Custom</option>
+        </select>
+      </div>
+      <div id="custom-sheet-fields" class="field-row" hidden>
+        <div class="field">
+          <label for="sheet-width">Largura folha (mm)</label>
+          <input id="sheet-width" type="number" min="10" step="1" value="210" />
+        </div>
+        <div class="field">
+          <label for="sheet-height">Altura folha (mm)</label>
+          <input id="sheet-height" type="number" min="10" step="1" value="297" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="orientation">Orientação</label>
+        <select id="orientation">
+          <option value="portrait">Retrato</option>
+          <option value="landscape">Paisagem</option>
+        </select>
+      </div>
+
+      <h3>Margens (mm)</h3>
+      <div class="field-row">
+        <div class="field">
+          <label for="margin-top">Superior</label>
+          <input id="margin-top" type="number" min="0" step="1" value="10" />
+        </div>
+        <div class="field">
+          <label for="margin-bottom">Inferior</label>
+          <input id="margin-bottom" type="number" min="0" step="1" value="10" />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="margin-left">Esquerda</label>
+          <input id="margin-left" type="number" min="0" step="1" value="10" />
+        </div>
+        <div class="field">
+          <label for="margin-right">Direita</label>
+          <input id="margin-right" type="number" min="0" step="1" value="10" />
+        </div>
+      </div>
+
+      <h3>Espaçamento entre etiquetas (mm)</h3>
+      <div class="field-row">
+        <div class="field">
+          <label for="gap-x">Horizontal</label>
+          <input id="gap-x" type="number" min="0" step="0.5" value="2" />
+        </div>
+        <div class="field">
+          <label for="gap-y">Vertical</label>
+          <input id="gap-y" type="number" min="0" step="0.5" value="2" />
+        </div>
+      </div>
+
+      <h3>Impressão</h3>
+      <div class="field">
+        <label for="dpi">DPI</label>
+        <select id="dpi">
+          <option value="203">203</option>
+          <option value="300">300</option>
+        </select>
+      </div>
+
+      <h3>Fallback de tamanho da etiqueta (mm)</h3>
+      <p class="caption">Usado somente se o ZPL não definir ^PW/^LL. Deixe em branco para não definir.</p>
+      <div class="field-row">
+        <div class="field">
+          <label for="fallback-width">Largura</label>
+          <input id="fallback-width" type="number" min="0" step="1" placeholder="—" />
+        </div>
+        <div class="field">
+          <label for="fallback-height">Altura</label>
+          <input id="fallback-height" type="number" min="0" step="1" placeholder="—" />
+        </div>
+      </div>
+
+      <h3>Redimensionamento</h3>
+      <label class="checkbox">
+        <input id="stretch" type="checkbox" />
+        Esticar para preencher célula
+      </label>
+      <p class="caption">
+        Se marcado, ignora a proporção original e estica a etiqueta para ocupar 100% da célula
+        (pode distorcer o código de barras). Se desmarcado (padrão), a proporção original é
+        mantida e a etiqueta é centralizada na célula.
+      </p>
+    </section>
+
+    <section id="quantity-panel" class="panel" hidden>
+      <h2>Quantidade</h2>
+
+      <div id="single-fields" class="field-row" hidden>
+        <div class="field">
+          <label for="labels-per-page-single">Etiquetas por página</label>
+          <input id="labels-per-page-single" type="number" min="1" step="1" value="12" />
+        </div>
+        <div class="field">
+          <label for="pages">Número de páginas</label>
+          <input id="pages" type="number" min="1" step="1" value="1" />
+        </div>
+      </div>
+
+      <div id="multi-fields" hidden>
+        <h3>Como distribuir as etiquetas</h3>
+        <div class="field">
+          <label class="radio">
+            <input type="radio" name="multi-mode" value="fit-one-page" checked />
+            Caber tudo em 1 página
+          </label>
+          <label class="radio">
+            <input type="radio" name="multi-mode" value="paginate" />
+            Distribuir em várias páginas
+          </label>
+        </div>
+        <div id="labels-per-page-multi-field" class="field" hidden>
+          <label for="labels-per-page-multi">Etiquetas por página</label>
+          <input id="labels-per-page-multi" type="number" min="1" step="1" value="6" />
+        </div>
+        <p id="multi-caption" class="caption"></p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div id="info-box" class="info" hidden></div>
+      <div id="error-box" class="error" hidden></div>
+
+      <div class="actions">
+        <button id="preview-btn" type="button" disabled>🔍 Prévia da 1ª página</button>
+        <button id="generate-btn" type="button" class="primary" disabled>📄 Gerar PDF</button>
+      </div>
+
+      <p id="progress-status" class="status" hidden></p>
+
+      <div id="preview-container" hidden>
+        <h2>Prévia da 1ª página</h2>
+        <img id="preview-image" alt="Prévia da 1ª página" />
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
