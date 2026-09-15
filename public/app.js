@@ -5,6 +5,11 @@
   let currentFile = null;
   let totalLabelsInFile = null;
 
+  // Limite de corpo de requisição mais comumente documentado para funções
+  // serverless do Vercel (~4.5MB) — usado só para avisar cedo; o limite real
+  // pode variar por plano/config, então isso não bloqueia o envio.
+  const SAFE_UPLOAD_BYTES = 4 * 1024 * 1024;
+
   function debounce(fn, wait) {
     let timer;
     return (...args) => {
@@ -31,6 +36,57 @@
 
   function clearInfo() {
     document.getElementById("info-box").hidden = true;
+  }
+
+  function showWarning(message) {
+    const box = document.getElementById("size-warning");
+    box.textContent = message;
+    box.hidden = false;
+  }
+
+  function clearWarning() {
+    document.getElementById("size-warning").hidden = true;
+  }
+
+  /** Lê o corpo da resposta uma única vez e devolve uma mensagem de erro
+   * legível — incluindo o caso em que a própria plataforma (não a nossa API)
+   * respondeu algo que não é JSON (ex: uma página de erro genérica do
+   * Vercel por causa de um limite de tamanho de requisição). */
+  async function extractErrorMessage(response) {
+    const text = await response.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch (_) {
+      data = null;
+    }
+    if (data && data.error) {
+      return data.error;
+    }
+    const snippet = text.slice(0, 300).trim();
+    return (
+      `O servidor respondeu com um erro inesperado (HTTP ${response.status}), fora do ` +
+      "formato esperado — provavelmente uma falha da própria plataforma (ex: limite de " +
+      "tamanho da requisição no Vercel, ou timeout) em vez do nosso código." +
+      (snippet ? `\n\nDetalhe: ${snippet}` : "")
+    );
+  }
+
+  /** Para respostas onde esperamos JSON no sucesso (count/analyze). Lança
+   * com uma mensagem legível tanto se a resposta não for OK quanto se vier
+   * OK mas o corpo não for JSON válido. */
+  async function parseJsonResponse(response) {
+    if (!response.ok) {
+      throw new Error(await extractErrorMessage(response));
+    }
+    const text = await response.text();
+    try {
+      return text ? JSON.parse(text) : {};
+    } catch (_) {
+      throw new Error(
+        "O servidor respondeu OK, mas não devolveu JSON válido — resposta inesperada da plataforma."
+      );
+    }
   }
 
   function isMultiMode() {
@@ -119,10 +175,7 @@
     }
     try {
       const response = await apiCall("/api/analyze", buildFormData());
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Erro ao calcular a grade.");
-      }
+      const data = await parseJsonResponse(response);
       document.getElementById("preview-btn").disabled = false;
       document.getElementById("generate-btn").disabled = false;
 
@@ -168,6 +221,7 @@
     document.getElementById("preview-container").hidden = true;
     clearInfo();
     clearError();
+    clearWarning();
     document.getElementById("preview-btn").disabled = true;
     document.getElementById("generate-btn").disabled = true;
 
@@ -176,15 +230,21 @@
       return;
     }
 
+    if (file.size > SAFE_UPLOAD_BYTES) {
+      showWarning(
+        `⚠️ Esse arquivo tem ${(file.size / (1024 * 1024)).toFixed(1)}MB — funções serverless ` +
+          "do Vercel costumam ter um limite de corpo de requisição em torno de 4-4.5MB. Se der " +
+          "erro ao analisar/gerar, esse é o motivo mais provável; considere um arquivo menor ou " +
+          "a versão Streamlit (sem esse limite)."
+      );
+    }
+
     document.getElementById("file-status").textContent = "Analisando arquivo...";
     try {
       const fd = new FormData();
       fd.append("file", file);
       const response = await apiCall("/api/count", fd);
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Erro ao interpretar o ZPL.");
-      }
+      const data = await parseJsonResponse(response);
       totalLabelsInFile = data.total_labels_in_file;
       document.getElementById("file-status").textContent =
         totalLabelsInFile === 1
@@ -251,8 +311,7 @@
     try {
       const response = await apiCall("/api/preview", buildFormData());
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "Falha ao gerar a prévia.");
+        throw new Error(await extractErrorMessage(response));
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
@@ -271,8 +330,7 @@
     try {
       const response = await apiCall("/api/generate", buildFormData());
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "Falha ao gerar o PDF.");
+        throw new Error(await extractErrorMessage(response));
       }
       const blob = await response.blob();
       const disposition = response.headers.get("Content-Disposition") || "";

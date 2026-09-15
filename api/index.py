@@ -102,6 +102,16 @@ def _handle_render_error(exc: Exception) -> tuple[Response, int]:
     )
 
 
+@app.errorhandler(Exception)
+def _handle_unexpected_error(exc: Exception) -> tuple[Response, int]:
+    """Qualquer exceção não tratada acima ainda deve virar JSON (não a página
+    de erro HTML padrão do Flask) — o frontend só sabe interpretar JSON.
+    Falhas da própria plataforma Vercel (payload grande demais, timeout de
+    função) acontecem antes de chegar aqui e não passam por este handler."""
+    app.logger.exception("Erro inesperado em %s", request.path)
+    return jsonify({"error": f"Erro interno inesperado: {exc}"}), 500
+
+
 @app.route("/api/health", methods=["GET"])
 def health() -> Response:
     return jsonify({"status": "ok"})
