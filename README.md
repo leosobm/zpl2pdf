@@ -395,3 +395,16 @@ python -m zpl2pdf.cli --input examples\label_30x20mm.zpl --output saida.pdf --co
 - O `^JM` (modo de dots-per-millimeter do próprio ZPL) é extraído pelo
   parser mas não é usado para alterar o dpmm da renderização — quem define
   o dpmm é sempre o `--dpi` configurado, correspondendo à impressora alvo.
+
+## Etiquetas com imagem armazenada (`~DG`/`^XG`)
+
+Alguns exportadores (ex: Zebra Setup Utilities/drivers de impressora) geram
+arquivos onde cada etiqueta é precedida por um comando `~DG` (download de
+imagem) **fora** de qualquer bloco `^XA...^XZ`, seguido por um bloco que a
+recupera e imprime via `^XG`, e por um bloco adicional `^XA...^XZ` contendo
+só `^ID` (image delete) para limpar a imagem da memória — sem desenhar nada.
+O parser (`split_labels` em [`zpl2pdf/parser.py`](zpl2pdf/parser.py)) trata
+esse caso automaticamente: mantém o `~DG` junto do bloco de impressão que o
+usa (senão o Labelary recebe o `^XG` sem a imagem correspondente e retorna
+"ZPL generated no labels") e descarta os blocos que só contêm `^ID`, por não
+terem conteúdo visual.

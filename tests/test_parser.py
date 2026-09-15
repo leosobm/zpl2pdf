@@ -66,6 +66,38 @@ def test_parse_zpl_content_indexes_labels_in_order():
     assert "dois" in labels[1].raw
 
 
+def test_split_labels_bundles_preceding_dg_and_drops_image_delete_blocks():
+    """Padrão comum em exportações do Zebra Setup Utilities: um comando ~DG
+    (fora de ^XA...^XZ) armazena uma imagem, um bloco ^XA a recupera via ^XG
+    e imprime, e um bloco ^XA...^ID...^XZ seguinte só a apaga da memória
+    (sem desenhar nada). Sem agrupar o ~DG com o bloco de impressão, o
+    Labelary recebe o ^XG sem a imagem correspondente e falha com HTTP 404
+    "ZPL generated no labels"."""
+    content = (
+        "~DGR:LOGO.GRF,100,10,:Z64:FAKEDATA1:1234"
+        "^XA^MMT,Y^PON^MNY^FO0,0^XGR:LOGO.GRF,1,1^FS^PQ1,0,0,N^XZ"
+        "^XA^IDR:LOGO.GRF^FS^XZ"
+        "~DGR:LOGO.GRF,100,10,:Z64:FAKEDATA2:5678"
+        "^XA^MMT,Y^PON^MNY^FO0,0^XGR:LOGO.GRF,1,1^FS^PQ1,0,0,N^XZ"
+        "^XA^IDR:LOGO.GRF^FS^XZ"
+    )
+    blocks = split_labels(content)
+
+    assert len(blocks) == 2
+    for block in blocks:
+        assert block.startswith("~DGR:LOGO.GRF")
+        assert "^XG" in block
+        assert "^ID" not in block
+    assert "FAKEDATA1" in blocks[0]
+    assert "FAKEDATA2" in blocks[1]
+
+
+def test_split_labels_all_image_delete_only_raises():
+    content = "^XA^IDR:LOGO.GRF^FS^XZ^XA^IDR:LOGO.GRF^FS^XZ"
+    with pytest.raises(ZplParseError):
+        split_labels(content)
+
+
 def test_parse_zpl_file_not_found(tmp_path: Path):
     missing = tmp_path / "nao_existe.zpl"
     with pytest.raises(ZplParseError):
