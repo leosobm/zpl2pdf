@@ -44,7 +44,14 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from zpl2pdf.config import ConfigError
 from zpl2pdf.parser import ZplParseError
 from zpl2pdf.renderer import RenderError
-from zpl2pdf.webapi import RenderParams, analyze, count_labels, render_output_pdf, render_preview
+from zpl2pdf.webapi import (
+    RenderParams,
+    analyze,
+    count_labels,
+    render_output_pdf,
+    render_preview,
+    total_physical_quantity,
+)
 
 app = Flask(__name__)
 
@@ -131,7 +138,12 @@ def count_route() -> Response:
     nem exigir os demais parâmetros — chamado assim que o arquivo é
     selecionado, antes de saber se é modo etiqueta-única ou múltiplas."""
     content = _content_from_request()
-    return jsonify({"total_labels_in_file": count_labels(content)})
+    return jsonify(
+        {
+            "total_labels_in_file": count_labels(content),
+            "total_physical_quantity": total_physical_quantity(content),
+        }
+    )
 
 
 @app.route("/api/analyze", methods=["POST"])

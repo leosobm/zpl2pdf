@@ -3,7 +3,8 @@
 
   const fileInput = document.getElementById("file-input");
   let currentFile = null;
-  let totalLabelsInFile = null;
+  let totalLabelsInFile = null; // designs distintos (blocos ^XA...^XZ)
+  let totalPhysicalQuantity = null; // cópias físicas somando ^PQ de cada etiqueta
 
   // Limite de corpo de requisição mais comumente documentado para funções
   // serverless do Vercel (~4.5MB) — usado só para avisar cedo; o limite real
@@ -169,7 +170,7 @@
     document.getElementById("labels-per-page-multi-field").hidden = mode !== "paginate";
     if (mode === "fit-one-page") {
       document.getElementById("multi-caption").textContent =
-        `Grade dimensionada para as ${totalLabelsInFile} etiquetas distintas, em 1 página.`;
+        `Grade dimensionada para as ${totalPhysicalQuantity} etiquetas (${totalLabelsInFile} produtos distintos), em 1 página.`;
     }
   }
 
@@ -207,7 +208,8 @@
 
       if (data.mode === "paginate") {
         document.getElementById("multi-caption").textContent =
-          `📄 Serão geradas ${data.computed_pages} página(s) para cobrir as ${totalLabelsInFile} etiquetas.`;
+          `📄 Serão geradas ${data.computed_pages} página(s) para cobrir as ` +
+          `${data.total_labels_output} etiquetas (${totalLabelsInFile} produtos distintos).`;
       }
     } catch (err) {
       document.getElementById("preview-btn").disabled = true;
@@ -223,6 +225,7 @@
     const file = fileInput.files[0];
     currentFile = file || null;
     totalLabelsInFile = null;
+    totalPhysicalQuantity = null;
     document.getElementById("quantity-panel").hidden = true;
     document.getElementById("single-fields").hidden = true;
     document.getElementById("multi-fields").hidden = true;
@@ -254,17 +257,25 @@
       const response = await apiCall("/api/count", fd);
       const data = await parseJsonResponse(response);
       totalLabelsInFile = data.total_labels_in_file;
-      document.getElementById("file-status").textContent =
-        totalLabelsInFile === 1
-          ? `✅ Etiqueta única detectada em ${file.name}.`
-          : `✅ ${totalLabelsInFile} etiquetas distintas detectadas em ${file.name}.`;
+      totalPhysicalQuantity = data.total_physical_quantity;
+      if (totalLabelsInFile === 1) {
+        document.getElementById("file-status").textContent =
+          `✅ Etiqueta única detectada em ${file.name}.`;
+      } else if (totalPhysicalQuantity !== totalLabelsInFile) {
+        document.getElementById("file-status").textContent =
+          `✅ ${totalLabelsInFile} produtos distintos detectados em ${file.name} — ` +
+          `${totalPhysicalQuantity} etiquetas no total (considerando as quantidades ^PQ de cada produto).`;
+      } else {
+        document.getElementById("file-status").textContent =
+          `✅ ${totalLabelsInFile} etiquetas distintas detectadas em ${file.name}.`;
+      }
 
       document.getElementById("quantity-panel").hidden = false;
       if (totalLabelsInFile === 1) {
         document.getElementById("single-fields").hidden = false;
       } else {
         document.getElementById("multi-fields").hidden = false;
-        document.getElementById("labels-per-page-multi").max = String(totalLabelsInFile);
+        document.getElementById("labels-per-page-multi").max = String(totalPhysicalQuantity);
         updateMultiModeUI();
       }
       await refreshAnalysis();

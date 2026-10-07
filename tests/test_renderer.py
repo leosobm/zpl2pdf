@@ -94,6 +94,25 @@ def test_persistent_429_raises_render_error_naming_the_label(no_real_sleep):
     assert "3 tentativas" in message
 
 
+def test_render_normalizes_pq_quantity_to_1_before_calling_labelary(no_real_sleep):
+    """O Labelary simula uma impressora real: se o ^PQ do bloco pedir, digamos,
+    56 cópias, ele tenta devolver 56 imagens numa só resposta e recusa (HTTP 413)
+    acima do próprio teto dele. Só precisamos de 1 imagem por etiqueta distinta
+    (as cópias físicas são resolvidas depois, sem nova chamada à API), então o
+    ^PQ original nunca deve chegar como está ao corpo da requisição."""
+    label = make_label(raw="^XA^FO0,0^FDHello^FS^PQ56,0,1,Y^XZ")
+    renderer = LabelaryRenderer(cache=None, rate_limiter=NoOpRateLimiter())
+
+    with patch(
+        "zpl2pdf.renderer.requests.post", return_value=FakeResponse(200, content=b"PNGDATA")
+    ) as mock_post:
+        renderer.render(label, dpmm=8, width_mm=30.0, height_mm=20.0)
+
+    sent_body = mock_post.call_args.kwargs["data"].decode("utf-8")
+    assert "^PQ56" not in sent_body
+    assert "^PQ1,0,1,Y" in sent_body
+
+
 def test_rate_limiter_spaces_calls_at_configured_rate():
     limiter = RateLimiter(max_calls_per_second=2.0)
     sleep_durations = []

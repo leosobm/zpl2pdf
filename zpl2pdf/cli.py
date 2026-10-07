@@ -241,22 +241,34 @@ def run(argv: Optional[list[str]] = None) -> int:
                 f"--multi-mode paginate (distribui em páginas de --labels-per-page etiquetas cada)."
             )
 
-        logger.info("Arquivo contém %d etiquetas distintas.", len(labels))
+        total_physical = sum(label.pq_quantity for label in labels)
+        if total_physical != len(labels):
+            logger.info(
+                "Arquivo contém %d etiquetas distintas, %d etiquetas físicas (considerando ^PQ).",
+                len(labels), total_physical,
+            )
+        else:
+            logger.info("Arquivo contém %d etiquetas distintas.", len(labels))
+
         resolved_sizes: list[tuple[float, float]] = []
-        rendered_labels = []
+        expanded_rendered = []
         for i, label in enumerate(labels):
             width_mm, height_mm = resolve_label_size_mm(
                 label, dpmm,
                 print_config.fallback_label_width_mm, print_config.fallback_label_height_mm,
             )
             resolved_sizes.append((width_mm, height_mm))
-            logger.info("Renderizando etiqueta %d/%d (%.1fx%.1fmm)...", i + 1, len(labels), width_mm, height_mm)
-            rendered_labels.append(renderer.render(label, dpmm, width_mm, height_mm))
+            logger.info(
+                "Renderizando etiqueta %d/%d (%.1fx%.1fmm, %dx no PDF)...",
+                i + 1, len(labels), width_mm, height_mm, label.pq_quantity,
+            )
+            rendered = renderer.render(label, dpmm, width_mm, height_mm)
+            expanded_rendered.extend([rendered] * label.pq_quantity)
 
         ref_width_mm, ref_height_mm = resolved_sizes[0]
 
         if multi_mode == "fit-one-page":
-            grid_count = len(labels)
+            grid_count = total_physical
         else:
             grid_count = labels_per_page
 
@@ -278,7 +290,7 @@ def run(argv: Optional[list[str]] = None) -> int:
                 worst_scale * 100,
             )
 
-        placements = engine.place_sequence(rendered_labels)
+        placements = engine.place_sequence(expanded_rendered)
         total_pages = build_pdf(placements, sheet, args.output)
 
         print()
@@ -290,7 +302,8 @@ def run(argv: Optional[list[str]] = None) -> int:
         print(f"  Grade por página: {cols} col x {rows} lin")
         print(f"  Pior escala aplicada: {worst_scale * 100:.0f}% ({'esticada' if stretch else 'proporcional, centralizada'})")
         print(f"  Páginas geradas: {total_pages}")
-        print(f"  Total de etiquetas no PDF: {len(labels)}")
+        print(f"  Total de etiquetas no PDF: {len(expanded_rendered)}"
+              + (f" ({len(labels)} produtos distintos, quantidades via ^PQ)" if total_physical != len(labels) else ""))
         print(f"  PDF final: {Path(args.output).resolve()}")
         return 0
 

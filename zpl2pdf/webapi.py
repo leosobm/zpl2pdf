@@ -14,6 +14,15 @@ Detecta automaticamente o tipo de arquivo:
   (grade dimensionada para o total de etiquetas do arquivo, em 1 página) ou
   `paginate` (distribui em páginas de `labels_per_page` etiquetas cada; o
   número de páginas é calculado automaticamente).
+
+No caso de múltiplas etiquetas, cada bloco pode trazer seu próprio comando
+`^PQ<quantidade>` (Print Quantity — comum em exportações de picking/
+expedição, onde cada etiqueta de produto tem uma quantidade diferente de
+cópias). Essa quantidade (`ZplLabel.pq_quantity`, 1 se ausente) é sempre
+respeitada: a grade e a paginação são dimensionadas pelo total de cópias
+físicas (soma de todos os `^PQ`), não pelo número de designs distintos —
+mas cada etiqueta ainda é renderizada uma única vez (cache por hash do
+conteúdo) e reaproveitada nas cópias necessárias.
 """
 
 from __future__ import annotations
@@ -107,6 +116,51 @@ def count_labels(content: str) -> int:
     return len(parse_zpl_content(content))
 
 
+def _total_physical_quantity(labels: list[ZplLabel]) -> int:
+    """Soma das quantidades ^PQ de cada etiqueta (1 por etiqueta sem ^PQ)."""
+    return sum(label.pq_quantity for label in labels)
+
+
+def total_physical_quantity(content: str) -> int:
+    """Soma das quantidades ^PQ de todas as etiquetas do arquivo (1 por
+    etiqueta sem ^PQ) — não chama o Labelary; usado pela UI para popular
+    limites/defaults de "etiquetas por página" antes de conhecer o resto
+    dos parâmetros de layout."""
+    return _total_physical_quantity(parse_zpl_content(content))
+
+
+def _expand_by_quantity(
+    labels: list[ZplLabel], rendered: list[RenderedLabel]
+) -> list[RenderedLabel]:
+    """Repete cada `RenderedLabel` conforme o `pq_quantity` da etiqueta
+    correspondente — a imagem já foi renderizada uma única vez; aqui só se
+    decide quantas vezes ela aparece na sequência final de placements."""
+    expanded: list[RenderedLabel] = []
+    for label, item in zip(labels, rendered):
+        expanded.extend([item] * label.pq_quantity)
+    return expanded
+
+
+def _prefix_covering_quantity(
+    labels: list[ZplLabel],
+    resolved_sizes: list[tuple[float, float]],
+    target_count: int,
+) -> tuple[list[ZplLabel], list[tuple[float, float]]]:
+    """Menor prefixo de `labels` cuja soma de `pq_quantity` alcança
+    `target_count` — usado para renderizar só o necessário para a 1ª página
+    no modo `paginate`, mesmo quando etiquetas têm quantidades > 1."""
+    selected_labels: list[ZplLabel] = []
+    selected_sizes: list[tuple[float, float]] = []
+    total = 0
+    for label, size in zip(labels, resolved_sizes):
+        if total >= target_count:
+            break
+        selected_labels.append(label)
+        selected_sizes.append(size)
+        total += label.pq_quantity
+    return selected_labels, selected_sizes
+
+
 def _labels_and_sizes(
     content: str, params: RenderParams
 ) -> tuple[list[ZplLabel], list[tuple[float, float]], int]:
@@ -122,7 +176,12 @@ def _labels_and_sizes(
 def _grid_count_and_output(
     labels: list[ZplLabel], params: RenderParams
 ) -> tuple[str, int, int, int]:
-    """Retorna (mode, grid_count, total_labels_output, computed_pages)."""
+    """Retorna (mode, grid_count, total_labels_output, computed_pages).
+
+    `total_labels_output` é a quantidade FÍSICA de etiquetas (soma dos
+    `^PQ` de cada uma, ou 1 por etiqueta sem `^PQ`) — não o número de
+    designs distintos no arquivo.
+    """
     if len(labels) == 1:
         return "single", params.labels_per_page, params.labels_per_page * params.pages, params.pages
 
@@ -132,12 +191,15 @@ def _grid_count_and_output(
             "'fit-one-page' (cabe tudo em 1 página) ou 'paginate' (distribui em páginas "
             "de labels_per_page etiquetas cada)."
         )
+
+    total_physical = _total_physical_quantity(labels)
+
     if params.multi_mode == "fit-one-page":
-        return "fit-one-page", len(labels), len(labels), 1
+        return "fit-one-page", total_physical, total_physical, 1
 
     grid_count = params.labels_per_page
-    computed_pages = math.ceil(len(labels) / grid_count)
-    return "paginate", grid_count, len(labels), computed_pages
+    computed_pages = math.ceil(total_physical / grid_count)
+    return "paginate", grid_count, total_physical, computed_pages
 
 
 def _prepare(
@@ -251,12 +313,13 @@ def render_preview(
         placements = engine.place_single(rendered, pages=1)
     elif mode == "fit-one-page":
         rendered_labels = render_all(labels, resolved_sizes, dpmm, renderer, on_progress)
-        placements = engine.place_sequence(rendered_labels)
-    else:  # paginate: só a 1ª página, sem gastar chamadas de API nas restantes.
-        subset = labels[:grid_count]
-        subset_sizes = resolved_sizes[:grid_count]
+        placements = engine.place_sequence(_expand_by_quantity(labels, rendered_labels))
+    else:  # paginate: só o necessário para cobrir a 1ª página (grid_count
+        # etiquetas físicas), considerando ^PQ — sem gastar chamadas de API
+        # nas etiquetas das páginas seguintes.
+        subset, subset_sizes = _prefix_covering_quantity(labels, resolved_sizes, grid_count)
         rendered_labels = render_all(subset, subset_sizes, dpmm, renderer, on_progress)
-        placements = engine.place_sequence(rendered_labels)
+        placements = engine.place_sequence(_expand_by_quantity(subset, rendered_labels))
 
     image = build_preview_image(sheet, placements)
     buffer = io.BytesIO()
@@ -282,6 +345,6 @@ def render_output_pdf(
         placements = engine.place_single(rendered, params.pages)
     else:
         rendered_labels = render_all(labels, resolved_sizes, dpmm, renderer, on_progress)
-        placements = engine.place_sequence(rendered_labels)
+        placements = engine.place_sequence(_expand_by_quantity(labels, rendered_labels))
 
     return build_pdf(placements, sheet, output_path)

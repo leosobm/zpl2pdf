@@ -20,6 +20,14 @@ O tipo de arquivo é detectado automaticamente pelo número de blocos
      (`ceil(N / labels_per_page)`) e a última página, mesmo parcial, usa o
      mesmo tamanho de célula das páginas cheias.
 
+   Se um bloco trouxer `^PQ<quantidade>` (comum em exportações de picking/
+   expedição, cada etiqueta de produto com sua própria quantidade), essa
+   quantidade é sempre respeitada: a grade/paginação é dimensionada pelo
+   total de cópias físicas (soma de todos os `^PQ`), não pelo número de
+   designs distintos — mas cada etiqueta ainda é renderizada uma única vez
+   e reaproveitada nas cópias necessárias (ver "Quantidade por etiqueta via
+   `^PQ`" abaixo).
+
 ## Instalação
 
 ```powershell
@@ -120,6 +128,45 @@ as posições sobrando em branco).
 Um arquivo com mais de uma etiqueta **exige** `--multi-mode`; sem ele, a
 CLI para com uma mensagem explicando as duas opções.
 
+### Quantidade por etiqueta via `^PQ`
+
+Exportações de picking/expedição costumam trazer, ao final de cada bloco,
+o comando ZPL `^PQ<quantidade>,...` ("Print Quantity") — a quantidade de
+cópias físicas daquela etiqueta especificamente. O parser extrai isso em
+`ZplLabel.pq_quantity` (1 quando ausente) e o sistema o usa em qualquer
+lugar que precise da quantidade total de etiquetas de um arquivo com
+múltiplas etiquetas distintas:
+
+```powershell
+python -m zpl2pdf.cli `
+  --input examples\label_pq_multiplas.zpl `
+  --output saida.pdf `
+  --multi-mode paginate --labels-per-page 6 `
+  --label-width 60 --label-height 40
+```
+
+`examples\label_pq_multiplas.zpl` tem 10 produtos distintos, com
+quantidades `^PQ` de 10, 3, 3, 12, 1, 7, 13, 1, 4 e 4 — **58 etiquetas
+físicas** ao todo. Com `--labels-per-page 6`, a grade é dimensionada para 6
+células e o número de páginas é `ceil(58 / 6) = 10`; a etiqueta de cada
+produto é renderizada **uma única vez** (mesmo aparecendo 13 vezes no PDF,
+como `LGSE86172`) e reaproveitada nas cópias, sem chamadas de API extras.
+Cada produto preenche suas cópias em sequência, podendo atravessar o limite
+de uma página para a próxima (ex: com quantidade 10 e 6 por página, as
+primeiras 6 cópias ficam na página 1 e as últimas 4 na página 2).
+
+Sem `^PQ`, o comportamento é idêntico ao anterior (1 cópia por design,
+como nos Cenários 2 e 3 acima) — é totalmente compatível com arquivos que
+não usam esse comando.
+
+Como o Labelary simula uma impressora real, enviar o bloco ZPL com o `^PQ`
+original faria *ele* tentar devolver uma cópia renderizada por unidade — e
+recusar (HTTP 413 "Maximum label count exceeded") quantidades grandes (ex:
+`^PQ56`, comuns em exportações de picking). Por isso o renderer sempre
+normaliza o `^PQ` do bloco para `1` antes de chamar a API (`LabelaryRenderer._render_single_copy`)
+— só precisamos de uma imagem por etiqueta distinta; as cópias físicas são
+resolvidas depois, sem nenhuma chamada extra.
+
 ### Usando um arquivo de configuração
 
 Em vez de repetir todos os parâmetros na linha de comando, use `--config`
@@ -196,7 +243,9 @@ streamlit run app.py
 Isso abre a interface em `http://localhost:8501`. Fluxo de uso:
 
 1. Faça upload de um arquivo `.zpl`. O número de etiquetas distintas
-   detectadas é exibido imediatamente.
+   detectadas é exibido imediatamente — e, se alguma trouxer `^PQ` com
+   quantidade diferente de 1, o total de etiquetas físicas também aparece
+   (ex: "10 etiquetas distintas — 58 etiquetas físicas ao todo").
 2. Ajuste os parâmetros na sidebar (tamanho de folha, orientação, margens,
    gaps, dpi, o tamanho de fallback da etiqueta e o checkbox **"Esticar
    para preencher célula"**).
@@ -253,7 +302,11 @@ plataforma (Streamlit Community Cloud, Render, Railway, Fly.io, ...).
   `/api/*` para esse arquivo; o Flask cuida do roteamento interno.
 - `public/index.html` + `public/app.js` + `public/style.css`: formulário
   equivalente à sidebar do Streamlit, chamando os endpoints acima via
-  `fetch` — exibe a prévia numa `<img>` e dispara o download do PDF.
+  `fetch` — exibe a prévia numa `<img>` e dispara o download do PDF. Assim
+  como no Streamlit, se alguma etiqueta trouxer `^PQ` com quantidade
+  diferente de 1, `POST /api/count` devolve também o total de etiquetas
+  físicas (`total_physical_quantity`), usado nas legendas e no limite do
+  campo "Etiquetas por página".
 - O cache por hash de conteúdo ZPL usa `/tmp` (único diretório gravável em
   funções Vercel) — ainda evita renderizar duas vezes a mesma etiqueta
   **dentro de uma mesma requisição**, mas não persiste de forma garantida
@@ -366,7 +419,7 @@ app.py                    # interface web (Streamlit) — reusa webapi.py
 public/                   # frontend estático da versão Vercel (HTML/CSS/JS)
 api/index.py              # API serverless (Vercel) — Flask, reusa webapi.py
 zpl2pdf/
-├── parser.py       # separa etiquetas ^XA...^XZ e extrai ^PW/^LL/^JM
+├── parser.py       # separa etiquetas ^XA...^XZ e extrai ^PW/^LL/^JM/^PQ
 ├── renderer.py       # LabelRenderer (interface) + LabelaryRenderer + cache em disco
 ├── layout.py          # calculate_grid + LayoutEngine (place_single / place_sequence)
 ├── pdf_builder.py     # desenha as etiquetas no PDF final via reportlab
@@ -415,8 +468,9 @@ python -m pytest tests/ -v
 ```
 
 Cobrem o parser (separação de etiquetas `^XA...^XZ` — detecção de arquivo
-com 1 vs. N blocos —, extração de `^PW`/`^LL`/`^JM`, tratamento de arquivo
-malformado/inexistente) e o layout/grade:
+com 1 vs. N blocos —, extração de `^PW`/`^LL`/`^JM`/`^PQ`, tratamento de
+arquivo malformado/inexistente), o layout/grade e a orquestração
+(`zpl2pdf/webapi.py`, sem chamar o Labelary — `analyze()` é puro cálculo):
 
 - `compute_cell_size_mm` / `compute_draw_size_mm`: tamanho de célula a
   partir da área útil, margens e gap; redimensionamento preservando
@@ -432,6 +486,10 @@ malformado/inexistente) e o layout/grade:
   tamanho de célula das páginas cheias** (posições sobrando ficam em
   branco, não recalculadas para uma grade menor), e redimensionamento
   independente por etiqueta quando os tamanhos originais diferem entre si.
+- `webapi.analyze`/`total_physical_quantity`: grade e paginação calculadas
+  pela soma dos `^PQ` (não pelo número de designs distintos), quantidade
+  física igual à distinta quando `^PQ` está ausente, e etiqueta única
+  ignorando `^PQ` (usa `labels_per_page`/`pages` explícitos).
 
 ## Exemplos incluídos
 
@@ -444,6 +502,10 @@ malformado/inexistente) e o layout/grade:
 - [`examples/label_multiplas.zpl`](examples/label_multiplas.zpl) — 7
   etiquetas distintas no mesmo arquivo (pedidos #1001 a #1007); use com
   `--multi-mode fit-one-page` ou `--multi-mode paginate --labels-per-page N`.
+- [`examples/label_pq_multiplas.zpl`](examples/label_pq_multiplas.zpl) — 10
+  produtos distintos, cada um com uma quantidade `^PQ` diferente (58
+  etiquetas físicas ao todo); demonstra o comportamento descrito em
+  "Quantidade por etiqueta via `^PQ`" acima.
 
 Teste rápido:
 

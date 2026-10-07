@@ -28,7 +28,7 @@ import streamlit as st
 from zpl2pdf.config import ConfigError
 from zpl2pdf.parser import ZplParseError, parse_zpl_content
 from zpl2pdf.renderer import RenderError
-from zpl2pdf.webapi import RenderParams, analyze, render_output_pdf, render_preview
+from zpl2pdf.webapi import RenderParams, analyze, render_output_pdf, render_preview, total_physical_quantity
 
 CACHE_DIR = "cache"
 
@@ -126,6 +126,7 @@ if st.session_state.get("_last_file_id") != file_id:
 
 content: Optional[str] = None
 num_labels: Optional[int] = None
+total_physical: Optional[int] = None
 if uploaded_file is not None:
     try:
         content = uploaded_file.getvalue().decode("utf-8", errors="replace")
@@ -133,7 +134,14 @@ if uploaded_file is not None:
         if num_labels == 1:
             st.success(f"✅ Etiqueta única detectada em **{uploaded_file.name}**.")
         else:
-            st.success(f"✅ **{num_labels}** etiquetas distintas detectadas em **{uploaded_file.name}**.")
+            total_physical = total_physical_quantity(content)
+            if total_physical != num_labels:
+                st.success(
+                    f"✅ **{num_labels}** etiquetas distintas detectadas em **{uploaded_file.name}** "
+                    f"— **{total_physical}** etiquetas físicas ao todo (considerando ^PQ)."
+                )
+            else:
+                st.success(f"✅ **{num_labels}** etiquetas distintas detectadas em **{uploaded_file.name}**.")
     except ZplParseError as exc:
         st.error(f"Erro ao interpretar o ZPL: {exc}")
 
@@ -165,11 +173,11 @@ elif num_labels is not None and num_labels > 1:
     )
     multi_mode = "fit-one-page" if mode_label == "Caber tudo em 1 página" else "paginate"
 
-    if multi_mode == "fit-one-page":
-        st.caption(f"Grade dimensionada para as {num_labels} etiquetas distintas, em 1 página.")
-    else:
+    if multi_mode == "paginate":
+        max_labels_per_page = total_physical if total_physical is not None else num_labels
         labels_per_page = st.number_input(
-            "Etiquetas por página", min_value=1, max_value=num_labels, value=min(6, num_labels), step=1
+            "Etiquetas por página", min_value=1, max_value=max_labels_per_page,
+            value=min(6, max_labels_per_page), step=1,
         )
 
 params: Optional[RenderParams] = None
@@ -200,8 +208,18 @@ if params is not None:
     try:
         analysis = analyze(content, params)
         scale_pct = analysis.scale * 100
+        quantity_note = (
+            f" ({analysis.total_labels_in_file} produtos distintos, quantidades via ^PQ)"
+            if analysis.total_labels_output != analysis.total_labels_in_file
+            else ""
+        )
         if multi_mode == "paginate":
-            st.caption(f"📄 Serão geradas **{analysis.computed_pages}** página(s) para cobrir as {num_labels} etiquetas.")
+            st.caption(
+                f"📄 Serão geradas **{analysis.computed_pages}** página(s) para cobrir as "
+                f"{analysis.total_labels_output} etiquetas{quantity_note}."
+            )
+        elif multi_mode == "fit-one-page" and quantity_note:
+            st.caption(f"📄 {analysis.total_labels_output} etiquetas no total{quantity_note}.")
         st.info(
             f"📐 Grade calculada: **{analysis.cols} colunas x {analysis.rows} linhas** = "
             f"{analysis.cols * analysis.rows} células · "

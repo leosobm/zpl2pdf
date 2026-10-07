@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -32,6 +33,20 @@ _DPI_TO_DPMM = {
     300: 12,
     600: 24,
 }
+
+# O Labelary simula uma impressora real: se o ZPL enviado trouxer um ^PQ com
+# quantidade > 1, ele tenta devolver uma cópia renderizada por unidade — e
+# recusa (HTTP 413 "Maximum label count exceeded") quantidades grandes (ex:
+# exportações de picking com ^PQ56, ^PQ72...). Como só precisamos de UMA
+# imagem por etiqueta distinta (as cópias físicas são resolvidas depois, sem
+# nova chamada à API — ver `webapi._expand_by_quantity`), a quantidade
+# original é neutralizada antes de enviar/cachear.
+_PQ_QUANTITY_PATTERN = re.compile(r"(\^PQ)\d+", re.IGNORECASE)
+
+
+def _render_single_copy(zpl_raw: str) -> str:
+    """Força `^PQ` (se presente) a pedir 1 única cópia ao Labelary."""
+    return _PQ_QUANTITY_PATTERN.sub(r"\g<1>1", zpl_raw)
 
 
 class RenderError(Exception):
@@ -189,8 +204,13 @@ class LabelaryRenderer(LabelRenderer):
         width_mm: float,
         height_mm: float,
     ) -> RenderedLabel:
+        # A quantidade física (`^PQ`) é resolvida depois, sem nova chamada à
+        # API — o Labelary só precisa gerar 1 cópia, independente do ^PQ
+        # original do arquivo (ver `_render_single_copy`).
+        zpl_for_labelary = _render_single_copy(label.raw)
+
         if self.cache is not None:
-            cached = self.cache.get(label.raw, dpmm, width_mm, height_mm)
+            cached = self.cache.get(zpl_for_labelary, dpmm, width_mm, height_mm)
             if cached is not None:
                 logger.info("Etiqueta %d: usando cache local.", label.index + 1)
                 return RenderedLabel(
@@ -204,10 +224,10 @@ class LabelaryRenderer(LabelRenderer):
         height_in = height_mm / 25.4
         url = f"{self.BASE_URL}/{dpmm}dpmm/labels/{width_in:.2f}x{height_in:.2f}/0/"
 
-        png_bytes = self._request_with_retry(url, label.raw, label.index)
+        png_bytes = self._request_with_retry(url, zpl_for_labelary, label.index)
 
         if self.cache is not None:
-            self.cache.put(label.raw, dpmm, width_mm, height_mm, png_bytes)
+            self.cache.put(zpl_for_labelary, dpmm, width_mm, height_mm, png_bytes)
 
         return RenderedLabel(
             png_bytes=png_bytes,

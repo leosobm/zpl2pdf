@@ -66,6 +66,30 @@ def test_parse_zpl_content_indexes_labels_in_order():
     assert "dois" in labels[1].raw
 
 
+def test_parse_zpl_content_extracts_pq_quantity():
+    content = "^XA^FDteste^FS^PQ12,0,1,Y^XZ"
+    labels = parse_zpl_content(content)
+    assert labels[0].pq_quantity == 12
+
+
+def test_parse_zpl_content_missing_pq_defaults_to_one():
+    content = "^XA^FDteste^FS^XZ"
+    labels = parse_zpl_content(content)
+    assert labels[0].pq_quantity == 1
+
+
+def test_parse_zpl_content_zero_pq_defaults_to_one():
+    content = "^XA^FDteste^FS^PQ0,0,1,Y^XZ"
+    labels = parse_zpl_content(content)
+    assert labels[0].pq_quantity == 1
+
+
+def test_parse_zpl_content_pq_quantity_per_label():
+    content = "^XA^FDum^FS^PQ10,0,1,Y^XZ^XA^FDdois^FS^PQ3,0,1,Y^XZ"
+    labels = parse_zpl_content(content)
+    assert [l.pq_quantity for l in labels] == [10, 3]
+
+
 def test_split_labels_bundles_preceding_dg_and_drops_image_delete_blocks():
     """Padrão comum em exportações do Zebra Setup Utilities: um comando ~DG
     (fora de ^XA...^XZ) armazena uma imagem, um bloco ^XA a recupera via ^XG

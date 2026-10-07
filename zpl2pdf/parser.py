@@ -6,6 +6,10 @@ Cada etiqueta ZPL é delimitada pelos comandos ^XA (start format) e ^XZ
 - ^PW<dots>  -> largura da etiqueta em dots
 - ^LL<dots>  -> comprimento (altura) da etiqueta em dots
 - ^JM<A|B>   -> modo de dots-per-millimeter (A = resolução cheia, B = metade)
+- ^PQ<q>,... -> quantidade de cópias físicas daquela etiqueta (Print Quantity;
+                comum em exportações de picking/expedição com várias etiquetas
+                de produtos distintos, cada uma com sua própria quantidade).
+                Ausente ou inválido -> assume 1.
 
 Alguns exportadores (ex: Zebra Setup Utilities/drivers) geram arquivos onde
 cada etiqueta é precedida por um comando `~DG` (download graphic) **fora**
@@ -35,6 +39,7 @@ _LABEL_PATTERN = re.compile(r"\^XA.*?\^XZ", re.DOTALL | re.IGNORECASE)
 _PW_PATTERN = re.compile(r"\^PW(\d+)", re.IGNORECASE)
 _LL_PATTERN = re.compile(r"\^LL(\d+)", re.IGNORECASE)
 _JM_PATTERN = re.compile(r"\^JM([AB])", re.IGNORECASE)
+_PQ_PATTERN = re.compile(r"\^PQ(\d+)", re.IGNORECASE)
 
 # Comandos que desenham algo na etiqueta (texto/^FD, imagem inline/^GF,
 # recall de imagem armazenada/^XG, download de imagem/~DY,~DG).
@@ -59,6 +64,7 @@ class ZplLabel:
     pw_dots: Optional[int]
     ll_dots: Optional[int]
     jm_mode: Optional[str]
+    pq_quantity: int = 1
 
     def has_explicit_size(self) -> bool:
         """True se a etiqueta define sua própria largura e altura via ZPL."""
@@ -77,6 +83,15 @@ def _extract_str(pattern: re.Pattern, text: str) -> Optional[str]:
     if match is None:
         return None
     return match.group(1).upper()
+
+
+def _extract_pq_quantity(text: str) -> int:
+    """Quantidade de cópias físicas do comando ^PQ (1 se ausente/inválido)."""
+    match = _PQ_PATTERN.search(text)
+    if match is None:
+        return 1
+    value = int(match.group(1))
+    return value if value >= 1 else 1
 
 
 def split_labels(content: str) -> list[str]:
@@ -141,6 +156,7 @@ def parse_zpl_content(content: str) -> list[ZplLabel]:
                 pw_dots=_extract_int(_PW_PATTERN, block),
                 ll_dots=_extract_int(_LL_PATTERN, block),
                 jm_mode=_extract_str(_JM_PATTERN, block),
+                pq_quantity=_extract_pq_quantity(block),
             )
         )
     return labels
