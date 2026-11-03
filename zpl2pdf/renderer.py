@@ -142,63 +142,133 @@ def _is_blank_cell(cell: Image.Image) -> bool:
     return (white_pixels / total_pixels) >= _BLANK_CELL_RATIO
 
 
-def split_rendered_label(
-    rendered: RenderedLabel, cols: int, rows: int
-) -> list[RenderedLabel]:
-    """Recorta uma etiqueta renderizada em uma grade `cols x rows` de
-    sub-etiquetas, descartando células em branco.
+# Distância (em mm) usada para decidir se um espaço em branco entre duas
+# faixas de conteúdo é só a quebra de linha natural DENTRO de uma mesma
+# etiqueta (ex: o espaço entre o QR code e a última linha de texto) ou um
+# corredor de verdade ENTRE duas etiquetas distintas da grade. Calibrado
+# contra o arquivo real de picking da Shopee usado para validar este
+# recurso: quebras de linha internas medem ~0,75-0,9mm, o corredor entre
+# colunas mede ~1,6mm e o corredor entre linhas mede ~3,4mm — 1,0mm fica
+# folgado o bastante acima do primeiro caso e abaixo dos outros dois.
+_SPLIT_MERGE_GAP_MM = 1.0
+# Margem (em mm) adicionada ao redor de cada célula detectada, para não
+# cortar rente ao próprio conteúdo (anti-aliasing da borda do QR code etc).
+_SPLIT_CELL_PADDING_MM = 0.75
+
+
+def _axis_content_profile(image: Image.Image, collapse_width: bool) -> list[float]:
+    """Intensidade média de cinza (0=preto, 255=branco) ao longo de um eixo,
+    obtida via redimensionamento por box-filter do Pillow (sem numpy): cada
+    pixel da imagem reduzida a 1px de largura (ou altura) é a média de toda
+    a linha (ou coluna) correspondente da imagem original."""
+    gray = image.convert("L")
+    if collapse_width:
+        small = gray.resize((1, gray.height), Image.Resampling.BOX)
+    else:
+        small = gray.resize((gray.width, 1), Image.Resampling.BOX)
+    return [float(value) for value in small.getdata()]
+
+
+def _content_bands(profile: list[float], merge_gap_px: int) -> list[tuple[int, int]]:
+    """Encontra faixas contíguas (start, end) do perfil que têm conteúdo
+    (abaixo do limiar de branco), unindo faixas separadas por um vão menor
+    que `merge_gap_px` — isso absorve quebras de linha internas sem juntar
+    etiquetas vizinhas de verdade."""
+    raw_bands: list[tuple[int, int]] = []
+    start: Optional[int] = None
+    for index, value in enumerate(profile):
+        is_content = value < _BLANK_WHITE_THRESHOLD
+        if is_content and start is None:
+            start = index
+        elif not is_content and start is not None:
+            raw_bands.append((start, index))
+            start = None
+    if start is not None:
+        raw_bands.append((start, len(profile)))
+    if not raw_bands:
+        return []
+
+    merged = [raw_bands[0]]
+    for band_start, band_end in raw_bands[1:]:
+        prev_start, prev_end = merged[-1]
+        if band_start - prev_end < merge_gap_px:
+            merged[-1] = (prev_start, band_end)
+        else:
+            merged.append((band_start, band_end))
+    return merged
+
+
+def split_rendered_label(rendered: RenderedLabel, enabled: bool) -> list[RenderedLabel]:
+    """Recorta uma etiqueta renderizada em sub-etiquetas, detectando
+    automaticamente a grade real a partir dos pixels — sem exigir que o
+    usuário informe o número de colunas/linhas.
 
     Alguns exportadores (ex: a exportação de etiquetas de picking da
     Shopee) agrupam várias etiquetas físicas distintas numa única imagem
     `~DG`/`^GF` — uma "folha" pré-montada pela origem, sem nenhum comando
-    ZPL indicando a quantidade (ela só existe nos pixels da imagem). Esta
-    função assume uma grade fixa e uniforme dentro da imagem renderizada
-    (`cols` colunas x `rows` linhas, todas do mesmo tamanho) — comum nesse
-    tipo de exportação — e descarta células vazias (tipicamente a última
-    "folha" de um lote, só parcialmente preenchida).
+    ZPL indicando a quantidade (ela só existe nos pixels da imagem) e,
+    frequentemente, sem uma grade uniforme (a última folha de um lote tem
+    menos linhas preenchidas que as anteriores). Em vez de assumir um
+    tamanho de célula fixo (o que corta etiquetas ao meio quando a grade
+    real não bate exatamente com a divisão), a imagem é projetada em dois
+    perfis de intensidade média — um por linha, um por coluna — e as faixas
+    de conteúdo detectadas em cada eixo (separadas por corredores de
+    verdade, não por quebras de linha internas) formam a grade via produto
+    cartesiano; cada célula resultante ainda passa pelo mesmo filtro de
+    célula-em-branco usado antes, para descartar posições vazias de uma
+    grade parcialmente preenchida.
 
-    Com `cols <= 1 and rows <= 1` (padrão), devolve `[rendered]` sem
-    modificar nada — comportamento idêntico a antes desta funcionalidade."""
-    if cols <= 1 and rows <= 1:
+    Com `enabled=False` (padrão), devolve `[rendered]` sem modificar nada —
+    comportamento idêntico a antes desta funcionalidade."""
+    if not enabled:
         return [rendered]
-    if cols < 1 or rows < 1:
-        raise RenderError(f"split_grid_cols/rows devem ser >= 1 (recebido {cols}x{rows}).")
 
     image = Image.open(io.BytesIO(rendered.png_bytes))
     width_px, height_px = image.size
-    cell_width_px = width_px // cols
-    cell_height_px = height_px // rows
-    cell_width_mm = rendered.width_mm / cols
-    cell_height_mm = rendered.height_mm / rows
+    dpmm_x = width_px / rendered.width_mm
+    dpmm_y = height_px / rendered.height_mm
+    merge_gap_x_px = max(1, round(_SPLIT_MERGE_GAP_MM * dpmm_x))
+    merge_gap_y_px = max(1, round(_SPLIT_MERGE_GAP_MM * dpmm_y))
+    pad_x_px = round(_SPLIT_CELL_PADDING_MM * dpmm_x)
+    pad_y_px = round(_SPLIT_CELL_PADDING_MM * dpmm_y)
+
+    row_bands = _content_bands(
+        _axis_content_profile(image, collapse_width=True), merge_gap_y_px
+    )
+    col_bands = _content_bands(
+        _axis_content_profile(image, collapse_width=False), merge_gap_x_px
+    )
 
     pieces: list[RenderedLabel] = []
-    for row in range(rows):
-        for col in range(cols):
+    for y0, y1 in row_bands:
+        for x0, x1 in col_bands:
             box = (
-                col * cell_width_px,
-                row * cell_height_px,
-                (col + 1) * cell_width_px,
-                (row + 1) * cell_height_px,
+                max(0, x0 - pad_x_px),
+                max(0, y0 - pad_y_px),
+                min(width_px, x1 + pad_x_px),
+                min(height_px, y1 + pad_y_px),
             )
             cell = image.crop(box)
             if _is_blank_cell(cell):
                 continue
             buffer = io.BytesIO()
             cell.save(buffer, format="PNG")
+            cell_width_px, cell_height_px = cell.size
             pieces.append(
                 RenderedLabel(
                     png_bytes=buffer.getvalue(),
-                    width_mm=cell_width_mm,
-                    height_mm=cell_height_mm,
+                    width_mm=cell_width_px / dpmm_x,
+                    height_mm=cell_height_px / dpmm_y,
                     label_index=rendered.label_index,
                 )
             )
 
     if not pieces:
         raise RenderError(
-            f"Etiqueta {rendered.label_index + 1}: a grade {cols}x{rows} não encontrou "
-            "nenhuma célula com conteúdo — verifique se cols/rows correspondem à grade "
-            "real da imagem."
+            f"Etiqueta {rendered.label_index + 1}: não foi encontrada nenhuma "
+            "sub-etiqueta com conteúdo ao dividir a imagem automaticamente — "
+            "ela pode não seguir o padrão de grade esperado (várias etiquetas "
+            "lado a lado numa única imagem ~DG)."
         )
     return pieces
 

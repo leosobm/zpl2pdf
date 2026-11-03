@@ -167,33 +167,41 @@ normaliza o `^PQ` do bloco para `1` antes de chamar a API (`LabelaryRenderer._re
 — só precisamos de uma imagem por etiqueta distinta; as cópias físicas são
 resolvidas depois, sem nenhuma chamada extra.
 
-### Etiquetas agrupadas numa única imagem (`--split-grid-cols`/`--split-grid-rows`)
+### Etiquetas agrupadas numa única imagem (`--split-grid`)
 
 Algumas exportações de picking (ex: etiquetas de envio da Shopee) vão além
 do `^PQ`: em vez de uma etiqueta ZPL por unidade, cada bloco `^XA...^XZ` do
 arquivo é, na prática, uma **folha inteira pré-montada pela origem** — uma
 única imagem (`~DG`/`^GF`) com várias etiquetas físicas já desenhadas lado a
-lado, numa grade fixa (ex: 2 colunas x 5 linhas = até 10 por folha). Não tem
-nenhum comando ZPL indicando essa quantidade — ela só existe nos pixels da
-imagem, então `count_labels`/`^PQ` não têm como saber disso sozinhos.
+lado. Não tem nenhum comando ZPL indicando essa quantidade — ela só existe
+nos pixels da imagem — e a grade frequentemente nem é uniforme entre
+folhas (a última folha de um lote tem menos linhas preenchidas que as
+anteriores), então `count_labels`/`^PQ` não têm como saber disso sozinhos
+e um tamanho de grade fixo (ex: "sempre 2x5") cortaria etiquetas ao meio
+sempre que a folha real não enchesse a grade inteira.
 
-Para esse caso, informe o tamanho da grade *dentro da imagem* via
-`--split-grid-cols`/`--split-grid-rows` (CLI), os campos "Dividir imagem em
-sub-etiquetas" (Streamlit/web), ou `split_grid_cols`/`split_grid_rows` em
-`RenderParams`. Depois de cada etiqueta ser renderizada pelo Labelary, a
-imagem resultante é recortada nessa grade e as células em branco são
-descartadas (`renderer.split_rendered_label`) — tipicamente a última folha
-de um lote, que não enche a grade inteira. Cada sub-etiqueta resultante
-entra na sequência normal de posicionamento, como se fosse uma etiqueta
-comum do arquivo.
+Para esse caso, ative `--split-grid` (CLI), o checkbox "Esta etiqueta é uma
+folha com várias etiquetas agrupadas" (Streamlit/web), ou `split_grid=True`
+em `RenderParams` — não é preciso informar colunas/linhas. Depois de cada
+etiqueta ser renderizada pelo Labelary, a grade real é **detectada
+automaticamente** projetando a imagem em dois perfis de intensidade média
+(um por linha, um por coluna) e localizando as faixas de conteúdo
+separadas por corredores em branco de verdade — não confundidas com
+quebras de linha internas de uma mesma etiqueta (ex: o espaço entre o QR
+code e a última linha de texto) — ver `renderer.split_rendered_label` e as
+constantes `_SPLIT_MERGE_GAP_MM`/`_SPLIT_CELL_PADDING_MM`. Células que
+ainda assim ficarem em branco (a última folha de um lote, parcial) são
+descartadas. Cada sub-etiqueta resultante entra na sequência normal de
+posicionamento, como se fosse uma etiqueta comum do arquivo.
 
-Como as células em branco só são descobertas depois de renderizar, o total
-de etiquetas/páginas mostrado por `analyze()` **antes** de gerar o PDF é um
-teto (grade sempre cheia) — a UI sinaliza isso ("até N etiquetas/páginas");
-o valor exato só é conhecido ao final de `render_output_pdf`. Com
-`--split-grid-cols 1 --split-grid-rows 1` (padrão), o comportamento é
-idêntico ao de antes dessa funcionalidade — sem nenhum efeito em arquivos
-que não usam esse padrão.
+Como a divisão só é possível depois de ter a imagem renderizada, o total
+de etiquetas/páginas mostrado por `analyze()` **antes** de gerar o PDF não
+inclui essa divisão — é só a contagem de blocos/`^PQ` do arquivo, marcada
+como estimativa (a UI sinaliza isso: "pelo menos N etiquetas/páginas"); o
+valor exato só é conhecido ao final de `render_output_pdf`. Com
+`--split-grid` desligado (padrão), o comportamento é idêntico ao de antes
+dessa funcionalidade — sem nenhum efeito em arquivos que não usam esse
+padrão.
 
 ### Usando um arquivo de configuração
 
@@ -277,8 +285,8 @@ Isso abre a interface em `http://localhost:8501`. Fluxo de uso:
 2. Ajuste os parâmetros na sidebar (tamanho de folha, orientação, margens,
    gaps, dpi, o tamanho de fallback da etiqueta, o checkbox **"Esticar
    para preencher célula"** e, se o arquivo usar o padrão descrito em
-   "Etiquetas agrupadas numa única imagem" abaixo, **"Dividir imagem em
-   sub-etiquetas"**).
+   "Etiquetas agrupadas numa única imagem" abaixo, **"Esta etiqueta é uma
+   folha com várias etiquetas agrupadas"**).
 3. Dependendo do arquivo:
    - **Uma etiqueta**: informe quantas cópias por página e quantas
      páginas.
@@ -520,12 +528,14 @@ arquivo malformado/inexistente), o layout/grade e a orquestração
   pela soma dos `^PQ` (não pelo número de designs distintos), quantidade
   física igual à distinta quando `^PQ` está ausente, e etiqueta única
   ignorando `^PQ` (usa `labels_per_page`/`pages` explícitos).
-- `renderer.split_rendered_label`: recorte de uma etiqueta renderizada numa
-  grade `cols x rows`, descarte de células em branco, erro quando a grade
-  inteira está em branco, e no-op com `cols=rows=1`; `webapi`: o total
-  mostrado por `analyze()` é um teto (grade cheia) quando o split está
-  ativo, e o PDF final (`render_output_pdf`) reflete o total real já
-  descontadas as células em branco.
+- `renderer.split_rendered_label`: detecção automática da grade (linhas e
+  colunas certas, inclusive uma grade parcialmente preenchida — ex: 4
+  linhas em vez de 5 numa folha incompleta), descarte de células em
+  branco, erro quando a imagem inteira está em branco, e no-op com
+  `enabled=False`; `webapi`: com `split_grid` ativo, o total mostrado por
+  `analyze()` não inclui a divisão (marcado como estimativa, já que só é
+  possível depois de renderizar), e o PDF final (`render_output_pdf`)
+  reflete o total real já descontadas as células em branco.
 
 ## Exemplos incluídos
 

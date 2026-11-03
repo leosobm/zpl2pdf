@@ -122,24 +122,17 @@
 
       <h3>Dividir imagem em sub-etiquetas (opcional)</h3>
       <p class="caption">
-        Use quando cada etiqueta do arquivo já é uma "folha" com várias etiquetas físicas
-        desenhadas dentro da mesma imagem, numa grade fixa (comum em exportações de picking
-        da Shopee) — o sistema não tem como saber isso sozinho, já que não existe nenhum
-        comando ZPL indicando a quantidade real, só os pixels da imagem. Informe quantas
-        colunas/linhas tem a grade dentro da imagem; o sistema recorta cada célula e descarta
-        as que estiverem em branco. Deixe 1x1 (padrão) se cada etiqueta do arquivo já é uma
-        única etiqueta física.
+        Marque quando cada etiqueta do arquivo já é uma "folha" com várias etiquetas físicas
+        desenhadas dentro da mesma imagem (comum em exportações de picking da Shopee) — não
+        existe nenhum comando ZPL indicando a quantidade real, só os pixels da imagem. O
+        sistema detecta automaticamente a grade (procurando os espaços em branco entre
+        etiquetas vizinhas) e descarta células vazias — não é preciso informar colunas/linhas.
+        Deixe desmarcado (padrão) se cada etiqueta do arquivo já é uma única etiqueta física.
       </p>
-      <div class="field-row">
-        <div class="field">
-          <label for="split-cols">Colunas na imagem</label>
-          <input id="split-cols" type="number" min="1" step="1" value="1" />
-        </div>
-        <div class="field">
-          <label for="split-rows">Linhas na imagem</label>
-          <input id="split-rows" type="number" min="1" step="1" value="1" />
-        </div>
-      </div>
+      <label class="checkbox">
+        <input id="split-grid" type="checkbox" />
+        Esta etiqueta é uma folha com várias etiquetas agrupadas
+      </label>
     </section>
 
     <section id="quantity-panel" class="panel" hidden>

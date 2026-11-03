@@ -31,7 +31,13 @@ from .config import ConfigError, PrintConfig, SheetConfig, resolve_sheet_size
 from .layout import LOW_SCALE_WARNING_THRESHOLD, LayoutEngine, calculate_grid, resolve_label_size_mm
 from .parser import ZplParseError, parse_zpl_file
 from .pdf_builder import build_pdf
-from .renderer import LabelCache, LabelaryRenderer, RenderError, dpi_to_dpmm, split_rendered_label
+from .renderer import (
+    LabelCache,
+    LabelaryRenderer,
+    RenderError,
+    dpi_to_dpmm,
+    split_rendered_label,
+)
 
 logger = logging.getLogger("zpl2pdf")
 
@@ -53,8 +59,7 @@ DEFAULTS: dict[str, Any] = {
     "label_width": None,
     "label_height": None,
     "cache_dir": "cache",
-    "split_grid_cols": 1,
-    "split_grid_rows": 1,
+    "split_grid": False,
 }
 
 
@@ -98,15 +103,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--label-width", type=float, dest="label_width")
     parser.add_argument("--label-height", type=float, dest="label_height")
     parser.add_argument(
-        "--split-grid-cols", type=int, dest="split_grid_cols",
+        "--split-grid", action="store_true", dest="split_grid",
         help="Quando cada etiqueta do arquivo já é uma 'folha' com várias etiquetas físicas "
-        "desenhadas dentro da mesma imagem numa grade fixa (ex: exportações de picking da "
-        "Shopee) — quantas colunas tem essa grade. Padrão 1 (sem efeito).",
-    )
-    parser.add_argument(
-        "--split-grid-rows", type=int, dest="split_grid_rows",
-        help="Mesma ideia de --split-grid-cols, mas para o número de linhas da grade dentro "
-        "da imagem. Padrão 1 (sem efeito).",
+        "desenhadas dentro da mesma imagem (ex: exportações de picking da Shopee) — detecta "
+        "automaticamente essa grade a partir dos pixels da imagem renderizada e recorta cada "
+        "sub-etiqueta. Desligado por padrão (sem efeito).",
     )
     parser.add_argument("--cache-dir", dest="cache_dir")
     parser.add_argument("--no-cache", action="store_true", dest="no_cache")
@@ -148,6 +149,7 @@ def merge_config(args: argparse.Namespace, file_config: dict[str, Any]) -> dict[
     if getattr(args, "no_cache", False):
         merged["cache_dir"] = None
     merged["stretch"] = bool(args.stretch) or bool(file_config.get("stretch", False))
+    merged["split_grid"] = bool(args.split_grid) or bool(file_config.get("split_grid", False))
     return merged
 
 
@@ -254,13 +256,11 @@ def run(argv: Optional[list[str]] = None) -> int:
                 f"--multi-mode paginate (distribui em páginas de --labels-per-page etiquetas cada)."
             )
 
-        split_cols = int(cfg["split_grid_cols"])
-        split_rows = int(cfg["split_grid_rows"])
-        if split_cols > 1 or split_rows > 1:
+        split_grid = bool(cfg["split_grid"])
+        if split_grid:
             logger.info(
-                "Cada etiqueta do arquivo será recortada numa grade de %d x %d sub-etiquetas "
-                "(células em branco são descartadas).",
-                split_cols, split_rows,
+                "Cada etiqueta do arquivo será dividida automaticamente (grade detectada "
+                "nos pixels da imagem renderizada; células em branco são descartadas)."
             )
 
         total_physical_blocks = sum(label.pq_quantity for label in labels)
@@ -285,15 +285,14 @@ def run(argv: Optional[list[str]] = None) -> int:
                 i + 1, len(labels), width_mm, height_mm, label.pq_quantity,
             )
             rendered = renderer.render(label, dpmm, width_mm, height_mm)
-            for piece in split_rendered_label(rendered, split_cols, split_rows):
+            for piece in split_rendered_label(rendered, split_grid):
                 expanded_rendered.extend([piece] * label.pq_quantity)
 
-        # Grade/escala usam o tamanho de UMA sub-etiqueta (depois do recorte), já
-        # que é isso que acaba posicionado em cada célula — e o total real (já
-        # descontadas as células em branco da grade interna) está disponível aqui,
-        # sem precisar de uma estimativa por cima como na API web.
-        ref_width_mm = resolved_sizes[0][0] / split_cols
-        ref_height_mm = resolved_sizes[0][1] / split_rows
+        # Grade/escala usam o tamanho real de UMA sub-etiqueta já recortada
+        # (o que de fato acaba posicionado em cada célula) — e como a CLI
+        # renderiza tudo antes de montar a grade, o total aqui já é o exato
+        # (células em branco já descontadas), sem precisar de estimativa.
+        ref_width_mm, ref_height_mm = expanded_rendered[0].width_mm, expanded_rendered[0].height_mm
         total_physical = len(expanded_rendered)
 
         if multi_mode == "fit-one-page":
@@ -305,9 +304,7 @@ def run(argv: Optional[list[str]] = None) -> int:
         logger.info("Grade calculada: %d col x %d lin (%d célula(s)).", cols, rows, cols * rows)
 
         engine = LayoutEngine(sheet, cols, rows, stretch=stretch)
-        worst_scale = min(
-            engine.fit_scale_for(w / split_cols, h / split_rows) for w, h in resolved_sizes
-        )
+        worst_scale = min(engine.fit_scale_for(p.width_mm, p.height_mm) for p in expanded_rendered)
         logger.info(
             "Célula: %.1fx%.1fmm · modo %s · pior escala: %.0f%%.",
             engine.cell_width_mm, engine.cell_height_mm,

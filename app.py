@@ -115,15 +115,16 @@ stretch = st.sidebar.checkbox(
 )
 
 st.sidebar.subheader("Dividir imagem em sub-etiquetas")
-st.sidebar.caption(
-    "Use quando cada etiqueta do arquivo já é uma \"folha\" com várias etiquetas físicas "
-    "desenhadas dentro da mesma imagem, numa grade fixa (comum em exportações de picking "
-    "da Shopee) — não existe comando ZPL indicando essa quantidade, só os pixels da "
-    "imagem. Deixe 1x1 (padrão) se cada etiqueta do arquivo já é uma única etiqueta física."
+split_grid = st.sidebar.checkbox(
+    "Esta etiqueta é uma folha com várias etiquetas agrupadas",
+    value=False,
+    help="Marque quando cada etiqueta do arquivo já é uma \"folha\" com várias etiquetas "
+    "físicas desenhadas dentro da mesma imagem (comum em exportações de picking da Shopee) "
+    "— não existe comando ZPL indicando essa quantidade, só os pixels da imagem. O sistema "
+    "detecta automaticamente a grade (procurando os espaços em branco entre etiquetas "
+    "vizinhas) e descarta células vazias — não é preciso informar colunas/linhas. Deixe "
+    "desmarcado (padrão) se cada etiqueta do arquivo já é uma única etiqueta física.",
 )
-sc1, sc2 = st.sidebar.columns(2)
-split_grid_cols = int(sc1.number_input("Colunas na imagem", min_value=1, value=1, step=1))
-split_grid_rows = int(sc2.number_input("Linhas na imagem", min_value=1, value=1, step=1))
 
 # ---------------------------------------------------------------------------
 # Área principal: upload
@@ -209,8 +210,7 @@ if content is not None and num_labels is not None:
         labels_per_page=int(labels_per_page),
         pages=int(pages),
         multi_mode=multi_mode,
-        split_grid_cols=split_grid_cols,
-        split_grid_rows=split_grid_rows,
+        split_grid=bool(split_grid),
     )
 
 # ---------------------------------------------------------------------------
@@ -226,10 +226,10 @@ if params is not None:
             if analysis.total_labels_output != analysis.total_labels_in_file
             else ""
         )
-        est_prefix = "até " if analysis.is_output_estimated else ""
+        est_prefix = "pelo menos " if analysis.is_output_estimated else ""
         est_note = (
-            " — total exato só é conhecido depois de gerar (células em branco na grade "
-            "interna da imagem)."
+            " — como a divisão automática da imagem agrupada só acontece ao renderizar, o "
+            "total real (maior) e o número de páginas só são conhecidos depois de gerar."
             if analysis.is_output_estimated
             else ""
         )

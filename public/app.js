@@ -122,8 +122,7 @@
     fd.append("fallback_width_mm", document.getElementById("fallback-width").value);
     fd.append("fallback_height_mm", document.getElementById("fallback-height").value);
     fd.append("stretch", document.getElementById("stretch").checked ? "true" : "false");
-    fd.append("split_grid_cols", document.getElementById("split-cols").value);
-    fd.append("split_grid_rows", document.getElementById("split-rows").value);
+    fd.append("split_grid", document.getElementById("split-grid").checked ? "true" : "false");
 
     if (isMultiMode()) {
       const mode = selectedMultiMode();
@@ -171,10 +170,13 @@
     const mode = selectedMultiMode();
     document.getElementById("labels-per-page-multi-field").hidden = mode !== "paginate";
     if (mode === "fit-one-page") {
-      document.getElementById("multi-caption").textContent =
-        `Grade dimensionada para as ${totalPhysicalQuantity} etiquetas (${totalLabelsInFile} blocos ` +
-        "no arquivo), em 1 página — se usar a divisão em sub-etiquetas acima, esse número pode " +
-        "ser maior na prática.";
+      const splitOn = document.getElementById("split-grid").checked;
+      document.getElementById("multi-caption").textContent = splitOn
+        ? `Grade dimensionada para no mínimo ${totalPhysicalQuantity} etiquetas (${totalLabelsInFile} ` +
+          "blocos no arquivo), em 1 página — como a divisão automática da imagem agrupada só " +
+          "acontece ao renderizar, o total real (maior) só é conhecido depois de gerar."
+        : `Grade dimensionada para as ${totalPhysicalQuantity} etiquetas (${totalLabelsInFile} blocos ` +
+          "no arquivo), em 1 página.";
     }
   }
 
@@ -211,14 +213,13 @@
       showInfo(html);
 
       if (data.mode === "paginate") {
-        const prefix = data.is_output_estimated ? "até " : "";
-        const verb = data.is_output_estimated ? "Até" : "Serão";
+        const prefix = data.is_output_estimated ? "pelo menos " : "";
         document.getElementById("multi-caption").textContent =
-          `📄 ${verb} geradas ${prefix}${data.computed_pages} página(s) para cobrir ` +
+          `📄 Serão geradas ${prefix}${data.computed_pages} página(s) para cobrir ` +
           `${prefix}${data.total_labels_output} etiquetas (${totalLabelsInFile} blocos no arquivo).` +
           (data.is_output_estimated
-            ? " O total exato só é conhecido depois de gerar (algumas células da grade " +
-              "interna da imagem podem estar em branco)."
+            ? " Como a divisão automática da imagem agrupada só acontece ao renderizar, o " +
+              "total real (maior) e o número de páginas só são conhecidos depois de gerar."
             : "");
       }
     } catch (err) {
@@ -320,8 +321,7 @@
     "labels-per-page-single",
     "pages",
     "labels-per-page-multi",
-    "split-cols",
-    "split-rows",
+    "split-grid",
   ];
   watchedInputIds.forEach((id) => {
     const el = document.getElementById(id);
