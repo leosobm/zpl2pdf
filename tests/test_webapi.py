@@ -1,9 +1,18 @@
+import io
 import math
 
 import pytest
+from PIL import Image
 
 from zpl2pdf.config import ConfigError
-from zpl2pdf.webapi import RenderParams, analyze, count_labels, total_physical_quantity
+from zpl2pdf.renderer import LabelaryRenderer, RenderedLabel
+from zpl2pdf.webapi import (
+    RenderParams,
+    analyze,
+    count_labels,
+    render_output_pdf,
+    total_physical_quantity,
+)
 
 
 def _label_block(name: str, pq: int | None = None) -> str:
@@ -82,3 +91,71 @@ def test_analyze_single_label_ignores_pq_and_uses_labels_per_page():
     assert result.mode == "single"
     assert result.total_labels_output == 8
     assert result.cols * result.rows == 4
+
+
+# ---------------------------------------------------------------------------
+# split_grid_cols/rows: exportações (ex: picking da Shopee) onde uma única
+# etiqueta do arquivo já é uma "folha" com várias etiquetas físicas
+# desenhadas dentro da mesma imagem, numa grade fixa — sem nenhum comando
+# ZPL indicando a quantidade real (só existe nos pixels). O total antes de
+# renderizar é só um TETO (grade cheia); o valor exato sai de render_output_pdf.
+# ---------------------------------------------------------------------------
+
+
+def test_analyze_with_split_grid_reports_estimated_upper_bound():
+    content = _label_block("a") + _label_block("b")
+    params = RenderParams(multi_mode="fit-one-page", split_grid_cols=2, split_grid_rows=5)
+    result = analyze(content, params)
+
+    # 2 blocos distintos x (2 cols x 5 rows) = 20 no teto (grade cheia).
+    assert result.total_labels_output == 20
+    assert result.cols * result.rows == 20
+    assert result.is_output_estimated is True
+
+
+def test_analyze_without_split_grid_is_not_estimated():
+    content = _label_block("a") + _label_block("b")
+    params = RenderParams(multi_mode="fit-one-page")
+    result = analyze(content, params)
+
+    assert result.is_output_estimated is False
+
+
+def _make_grid_png(cols: int, rows: int, filled_cells: set[tuple[int, int]], cell_px: int = 20) -> bytes:
+    width_px, height_px = cols * cell_px, rows * cell_px
+    image = Image.new("RGB", (width_px, height_px), "white")
+    for row, col in filled_cells:
+        for y in range(row * cell_px, (row + 1) * cell_px):
+            for x in range(col * cell_px, (col + 1) * cell_px):
+                image.putpixel((x, y), (0, 0, 0))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_render_output_pdf_discards_blank_split_cells(monkeypatch, tmp_path):
+    """Reproduz o caso real (Shopee): cada etiqueta do arquivo é, na
+    verdade, uma folha 2x2 só parcialmente preenchida (3 das 4 células têm
+    conteúdo) — com 2 blocos no arquivo e 1 por página, o PDF final deve ter
+    exatamente 6 páginas (3+3 reais), não 8 (a estimativa otimista de
+    analyze() antes de renderizar, 2 blocos x grade cheia 2x2)."""
+    content = _label_block("folha1") + _label_block("folha2")
+    png_bytes = _make_grid_png(cols=2, rows=2, filled_cells={(0, 0), (0, 1), (1, 0)})
+
+    def fake_render(self, label, dpmm, width_mm, height_mm):
+        return RenderedLabel(png_bytes=png_bytes, width_mm=width_mm, height_mm=height_mm, label_index=label.index)
+
+    monkeypatch.setattr(LabelaryRenderer, "render", fake_render)
+
+    params = RenderParams(
+        multi_mode="paginate",
+        labels_per_page=1,
+        fallback_width_mm=100.0,
+        fallback_height_mm=100.0,
+        split_grid_cols=2,
+        split_grid_rows=2,
+    )
+    output_path = tmp_path / "out.pdf"
+    total_pages = render_output_pdf(content, params, output_path, cache_dir=None)
+
+    assert total_pages == 6

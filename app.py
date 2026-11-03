@@ -114,6 +114,17 @@ stretch = st.sidebar.checkbox(
     "original é mantida e a etiqueta é centralizada na célula.",
 )
 
+st.sidebar.subheader("Dividir imagem em sub-etiquetas")
+st.sidebar.caption(
+    "Use quando cada etiqueta do arquivo já é uma \"folha\" com várias etiquetas físicas "
+    "desenhadas dentro da mesma imagem, numa grade fixa (comum em exportações de picking "
+    "da Shopee) — não existe comando ZPL indicando essa quantidade, só os pixels da "
+    "imagem. Deixe 1x1 (padrão) se cada etiqueta do arquivo já é uma única etiqueta física."
+)
+sc1, sc2 = st.sidebar.columns(2)
+split_grid_cols = int(sc1.number_input("Colunas na imagem", min_value=1, value=1, step=1))
+split_grid_rows = int(sc2.number_input("Linhas na imagem", min_value=1, value=1, step=1))
+
 # ---------------------------------------------------------------------------
 # Área principal: upload
 # ---------------------------------------------------------------------------
@@ -198,6 +209,8 @@ if content is not None and num_labels is not None:
         labels_per_page=int(labels_per_page),
         pages=int(pages),
         multi_mode=multi_mode,
+        split_grid_cols=split_grid_cols,
+        split_grid_rows=split_grid_rows,
     )
 
 # ---------------------------------------------------------------------------
@@ -209,17 +222,27 @@ if params is not None:
         analysis = analyze(content, params)
         scale_pct = analysis.scale * 100
         quantity_note = (
-            f" ({analysis.total_labels_in_file} produtos distintos, quantidades via ^PQ)"
+            f" ({analysis.total_labels_in_file} blocos no arquivo)"
             if analysis.total_labels_output != analysis.total_labels_in_file
+            else ""
+        )
+        est_prefix = "até " if analysis.is_output_estimated else ""
+        est_note = (
+            " — total exato só é conhecido depois de gerar (células em branco na grade "
+            "interna da imagem)."
+            if analysis.is_output_estimated
             else ""
         )
         if multi_mode == "paginate":
             st.caption(
-                f"📄 Serão geradas **{analysis.computed_pages}** página(s) para cobrir as "
-                f"{analysis.total_labels_output} etiquetas{quantity_note}."
+                f"📄 Serão geradas {est_prefix}**{analysis.computed_pages}** página(s) para cobrir "
+                f"{est_prefix}{analysis.total_labels_output} etiquetas{quantity_note}.{est_note}"
             )
         elif multi_mode == "fit-one-page" and quantity_note:
-            st.caption(f"📄 {analysis.total_labels_output} etiquetas no total{quantity_note}.")
+            st.caption(
+                f"📄 {est_prefix}{analysis.total_labels_output} etiquetas no total{quantity_note}."
+                f"{est_note}"
+            )
         st.info(
             f"📐 Grade calculada: **{analysis.cols} colunas x {analysis.rows} linhas** = "
             f"{analysis.cols * analysis.rows} células · "

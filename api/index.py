@@ -84,6 +84,8 @@ def _params_from_request() -> RenderParams:
         labels_per_page=int(form.get("labels_per_page", 1)),
         pages=int(form.get("pages", 1)),
         multi_mode=form.get("multi_mode") or None,
+        split_grid_cols=int(form.get("split_grid_cols", 1) or 1),
+        split_grid_rows=int(form.get("split_grid_rows", 1) or 1),
     )
 
 
@@ -163,6 +165,7 @@ def analyze_route() -> Response:
             "cell_height_mm": result.cell_height_mm,
             "scale": result.scale,
             "low_scale_warning": result.low_scale_warning,
+            "is_output_estimated": result.is_output_estimated,
         }
     )
 

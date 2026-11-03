@@ -167,6 +167,34 @@ normaliza o `^PQ` do bloco para `1` antes de chamar a API (`LabelaryRenderer._re
 — só precisamos de uma imagem por etiqueta distinta; as cópias físicas são
 resolvidas depois, sem nenhuma chamada extra.
 
+### Etiquetas agrupadas numa única imagem (`--split-grid-cols`/`--split-grid-rows`)
+
+Algumas exportações de picking (ex: etiquetas de envio da Shopee) vão além
+do `^PQ`: em vez de uma etiqueta ZPL por unidade, cada bloco `^XA...^XZ` do
+arquivo é, na prática, uma **folha inteira pré-montada pela origem** — uma
+única imagem (`~DG`/`^GF`) com várias etiquetas físicas já desenhadas lado a
+lado, numa grade fixa (ex: 2 colunas x 5 linhas = até 10 por folha). Não tem
+nenhum comando ZPL indicando essa quantidade — ela só existe nos pixels da
+imagem, então `count_labels`/`^PQ` não têm como saber disso sozinhos.
+
+Para esse caso, informe o tamanho da grade *dentro da imagem* via
+`--split-grid-cols`/`--split-grid-rows` (CLI), os campos "Dividir imagem em
+sub-etiquetas" (Streamlit/web), ou `split_grid_cols`/`split_grid_rows` em
+`RenderParams`. Depois de cada etiqueta ser renderizada pelo Labelary, a
+imagem resultante é recortada nessa grade e as células em branco são
+descartadas (`renderer.split_rendered_label`) — tipicamente a última folha
+de um lote, que não enche a grade inteira. Cada sub-etiqueta resultante
+entra na sequência normal de posicionamento, como se fosse uma etiqueta
+comum do arquivo.
+
+Como as células em branco só são descobertas depois de renderizar, o total
+de etiquetas/páginas mostrado por `analyze()` **antes** de gerar o PDF é um
+teto (grade sempre cheia) — a UI sinaliza isso ("até N etiquetas/páginas");
+o valor exato só é conhecido ao final de `render_output_pdf`. Com
+`--split-grid-cols 1 --split-grid-rows 1` (padrão), o comportamento é
+idêntico ao de antes dessa funcionalidade — sem nenhum efeito em arquivos
+que não usam esse padrão.
+
 ### Usando um arquivo de configuração
 
 Em vez de repetir todos os parâmetros na linha de comando, use `--config`
@@ -247,8 +275,10 @@ Isso abre a interface em `http://localhost:8501`. Fluxo de uso:
    quantidade diferente de 1, o total de etiquetas físicas também aparece
    (ex: "10 etiquetas distintas — 58 etiquetas físicas ao todo").
 2. Ajuste os parâmetros na sidebar (tamanho de folha, orientação, margens,
-   gaps, dpi, o tamanho de fallback da etiqueta e o checkbox **"Esticar
-   para preencher célula"**).
+   gaps, dpi, o tamanho de fallback da etiqueta, o checkbox **"Esticar
+   para preencher célula"** e, se o arquivo usar o padrão descrito em
+   "Etiquetas agrupadas numa única imagem" abaixo, **"Dividir imagem em
+   sub-etiquetas"**).
 3. Dependendo do arquivo:
    - **Uma etiqueta**: informe quantas cópias por página e quantas
      páginas.
@@ -490,6 +520,12 @@ arquivo malformado/inexistente), o layout/grade e a orquestração
   pela soma dos `^PQ` (não pelo número de designs distintos), quantidade
   física igual à distinta quando `^PQ` está ausente, e etiqueta única
   ignorando `^PQ` (usa `labels_per_page`/`pages` explícitos).
+- `renderer.split_rendered_label`: recorte de uma etiqueta renderizada numa
+  grade `cols x rows`, descarte de células em branco, erro quando a grade
+  inteira está em branco, e no-op com `cols=rows=1`; `webapi`: o total
+  mostrado por `analyze()` é um teto (grade cheia) quando o split está
+  ativo, e o PDF final (`render_output_pdf`) reflete o total real já
+  descontadas as células em branco.
 
 ## Exemplos incluídos
 

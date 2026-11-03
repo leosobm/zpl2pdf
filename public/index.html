@@ -119,6 +119,27 @@
         (pode distorcer o código de barras). Se desmarcado (padrão), a proporção original é
         mantida e a etiqueta é centralizada na célula.
       </p>
+
+      <h3>Dividir imagem em sub-etiquetas (opcional)</h3>
+      <p class="caption">
+        Use quando cada etiqueta do arquivo já é uma "folha" com várias etiquetas físicas
+        desenhadas dentro da mesma imagem, numa grade fixa (comum em exportações de picking
+        da Shopee) — o sistema não tem como saber isso sozinho, já que não existe nenhum
+        comando ZPL indicando a quantidade real, só os pixels da imagem. Informe quantas
+        colunas/linhas tem a grade dentro da imagem; o sistema recorta cada célula e descarta
+        as que estiverem em branco. Deixe 1x1 (padrão) se cada etiqueta do arquivo já é uma
+        única etiqueta física.
+      </p>
+      <div class="field-row">
+        <div class="field">
+          <label for="split-cols">Colunas na imagem</label>
+          <input id="split-cols" type="number" min="1" step="1" value="1" />
+        </div>
+        <div class="field">
+          <label for="split-rows">Linhas na imagem</label>
+          <input id="split-rows" type="number" min="1" step="1" value="1" />
+        </div>
+      </div>
     </section>
 
     <section id="quantity-panel" class="panel" hidden>

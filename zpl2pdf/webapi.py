@@ -23,6 +23,19 @@ respeitada: a grade e a paginação são dimensionadas pelo total de cópias
 físicas (soma de todos os `^PQ`), não pelo número de designs distintos —
 mas cada etiqueta ainda é renderizada uma única vez (cache por hash do
 conteúdo) e reaproveitada nas cópias necessárias.
+
+Alguns exportadores (ex: etiquetas de picking da Shopee) vão além: agrupam
+várias etiquetas físicas distintas numa única imagem `~DG`/`^GF` — uma
+"folha" já pré-montada pela origem, numa grade fixa (ex: 2 colunas x 5
+linhas), sem nenhum comando ZPL indicando a quantidade real (ela só existe
+nos pixels da imagem, não no texto). `RenderParams.split_grid_cols`/
+`split_grid_rows` (ambos 1 por padrão = sem efeito) recortam cada imagem
+renderizada nessa grade e descartam células em branco (a última "folha" de
+um lote normalmente não enche a grade inteira) — ver
+`renderer.split_rendered_label`. Como a quantidade real só é conhecida
+depois de renderizar (células em branco não existem no ZPL), o total
+mostrado em `AnalysisResult` antes de renderizar é um TETO (grade cheia em
+toda folha); o total exato só sai depois de `render_output_pdf`.
 """
 
 from __future__ import annotations
@@ -45,7 +58,7 @@ from .layout import (
 )
 from .parser import ZplLabel, parse_zpl_content
 from .pdf_builder import build_pdf
-from .renderer import LabelCache, LabelaryRenderer, RenderedLabel, dpi_to_dpmm
+from .renderer import LabelCache, LabelaryRenderer, RenderedLabel, dpi_to_dpmm, split_rendered_label
 
 MULTI_MODE_CHOICES = ("fit-one-page", "paginate")
 
@@ -75,6 +88,14 @@ class RenderParams:
     labels_per_page: int = 1
     pages: int = 1
     multi_mode: Optional[str] = None
+    split_grid_cols: int = 1
+    split_grid_rows: int = 1
+
+    @property
+    def split_multiplier(self) -> int:
+        """Quantas sub-etiquetas uma imagem renderizada pode gerar no máximo
+        (grade cheia) — 1 quando `split_grid_cols`/`rows` estão no padrão."""
+        return max(self.split_grid_cols, 1) * max(self.split_grid_rows, 1)
 
     def build_sheet(self) -> SheetConfig:
         width_mm, height_mm = resolve_sheet_size(self.sheet_size)
@@ -106,6 +127,7 @@ class AnalysisResult:
     cell_height_mm: float
     scale: float
     low_scale_warning: bool
+    is_output_estimated: bool = False
 
 
 def count_labels(content: str) -> int:
@@ -129,15 +151,22 @@ def total_physical_quantity(content: str) -> int:
     return _total_physical_quantity(parse_zpl_content(content))
 
 
-def _expand_by_quantity(
-    labels: list[ZplLabel], rendered: list[RenderedLabel]
+def _expand_rendered(
+    labels: list[ZplLabel], rendered: list[RenderedLabel], params: RenderParams
 ) -> list[RenderedLabel]:
-    """Repete cada `RenderedLabel` conforme o `pq_quantity` da etiqueta
-    correspondente — a imagem já foi renderizada uma única vez; aqui só se
-    decide quantas vezes ela aparece na sequência final de placements."""
+    """Expande cada `RenderedLabel` em sua sequência final de placements:
+
+    1. Recorta a imagem na grade `split_grid_cols x split_grid_rows`, se
+       configurada (descartando células em branco — ver
+       `renderer.split_rendered_label`); sem isso, é um no-op (1 imagem).
+    2. Repete cada sub-etiqueta resultante `pq_quantity` vezes (comando
+       `^PQ` da etiqueta original, 1 se ausente).
+    """
     expanded: list[RenderedLabel] = []
     for label, item in zip(labels, rendered):
-        expanded.extend([item] * label.pq_quantity)
+        pieces = split_rendered_label(item, params.split_grid_cols, params.split_grid_rows)
+        for piece in pieces:
+            expanded.extend([piece] * label.pq_quantity)
     return expanded
 
 
@@ -145,10 +174,14 @@ def _prefix_covering_quantity(
     labels: list[ZplLabel],
     resolved_sizes: list[tuple[float, float]],
     target_count: int,
+    split_multiplier: int = 1,
 ) -> tuple[list[ZplLabel], list[tuple[float, float]]]:
-    """Menor prefixo de `labels` cuja soma de `pq_quantity` alcança
-    `target_count` — usado para renderizar só o necessário para a 1ª página
-    no modo `paginate`, mesmo quando etiquetas têm quantidades > 1."""
+    """Menor prefixo de `labels` cuja soma de `pq_quantity * split_multiplier`
+    alcança `target_count` — usado para renderizar só o necessário para a 1ª
+    página no modo `paginate`, mesmo quando etiquetas têm quantidades > 1 ou
+    cada imagem se desdobra em várias sub-etiquetas (`split_multiplier`).
+    Como células em branco só são descobertas ao renderizar, esse prefixo é
+    uma estimativa por cima — pode sobrar menos que `target_count` no final."""
     selected_labels: list[ZplLabel] = []
     selected_sizes: list[tuple[float, float]] = []
     total = 0
@@ -157,7 +190,7 @@ def _prefix_covering_quantity(
             break
         selected_labels.append(label)
         selected_sizes.append(size)
-        total += label.pq_quantity
+        total += label.pq_quantity * split_multiplier
     return selected_labels, selected_sizes
 
 
@@ -180,7 +213,11 @@ def _grid_count_and_output(
 
     `total_labels_output` é a quantidade FÍSICA de etiquetas (soma dos
     `^PQ` de cada uma, ou 1 por etiqueta sem `^PQ`) — não o número de
-    designs distintos no arquivo.
+    designs distintos no arquivo. Quando `params.split_multiplier > 1`
+    (grade de sub-etiquetas dentro da imagem, ver `split_rendered_label`),
+    esse total é um TETO (grade cheia em toda folha) — células em branco só
+    são descobertas ao renderizar, então o valor real pode ser menor (ver
+    `is_output_estimated` em `AnalysisResult`).
     """
     if len(labels) == 1:
         return "single", params.labels_per_page, params.labels_per_page * params.pages, params.pages
@@ -192,7 +229,7 @@ def _grid_count_and_output(
             "de labels_per_page etiquetas cada)."
         )
 
-    total_physical = _total_physical_quantity(labels)
+    total_physical = _total_physical_quantity(labels) * params.split_multiplier
 
     if params.multi_mode == "fit-one-page":
         return "fit-one-page", total_physical, total_physical, 1
@@ -200,6 +237,16 @@ def _grid_count_and_output(
     grid_count = params.labels_per_page
     computed_pages = math.ceil(total_physical / grid_count)
     return "paginate", grid_count, total_physical, computed_pages
+
+
+def _split_adjusted_size(
+    width_mm: float, height_mm: float, params: RenderParams
+) -> tuple[float, float]:
+    """Tamanho de referência de UMA sub-etiqueta depois do recorte (ver
+    `split_rendered_label`) — usado para orientar a grade e calcular a
+    escala, já que o que acaba posicionado em cada célula é a sub-etiqueta,
+    não a imagem renderizada inteira. Sem split configurado, é um no-op."""
+    return width_mm / params.split_grid_cols, height_mm / params.split_grid_rows
 
 
 def _prepare(
@@ -218,7 +265,7 @@ def _prepare(
     mode, grid_count, _total, _pages = _grid_count_and_output(labels, params)
 
     sheet = params.build_sheet()
-    ref_width_mm, ref_height_mm = resolved_sizes[0]
+    ref_width_mm, ref_height_mm = _split_adjusted_size(*resolved_sizes[0], params)
     cols, rows = calculate_grid(grid_count, sheet, ref_width_mm, ref_height_mm)
     engine = LayoutEngine(sheet, cols, rows, stretch=params.stretch)
 
@@ -235,10 +282,12 @@ def analyze(content: str, params: RenderParams) -> AnalysisResult:
     mode, grid_count, total_labels_output, computed_pages = _grid_count_and_output(labels, params)
 
     sheet = params.build_sheet()
-    ref_width_mm, ref_height_mm = resolved_sizes[0]
+    ref_width_mm, ref_height_mm = _split_adjusted_size(*resolved_sizes[0], params)
     cols, rows = calculate_grid(grid_count, sheet, ref_width_mm, ref_height_mm)
     engine = LayoutEngine(sheet, cols, rows, stretch=params.stretch)
-    worst_scale = min(engine.fit_scale_for(w, h) for w, h in resolved_sizes)
+    worst_scale = min(
+        engine.fit_scale_for(*_split_adjusted_size(w, h, params)) for w, h in resolved_sizes
+    )
 
     return AnalysisResult(
         mode=mode,
@@ -251,6 +300,7 @@ def analyze(content: str, params: RenderParams) -> AnalysisResult:
         cell_height_mm=engine.cell_height_mm,
         scale=worst_scale,
         low_scale_warning=worst_scale < LOW_SCALE_WARNING_THRESHOLD,
+        is_output_estimated=params.split_multiplier > 1,
     )
 
 
@@ -313,13 +363,15 @@ def render_preview(
         placements = engine.place_single(rendered, pages=1)
     elif mode == "fit-one-page":
         rendered_labels = render_all(labels, resolved_sizes, dpmm, renderer, on_progress)
-        placements = engine.place_sequence(_expand_by_quantity(labels, rendered_labels))
+        placements = engine.place_sequence(_expand_rendered(labels, rendered_labels, params))
     else:  # paginate: só o necessário para cobrir a 1ª página (grid_count
-        # etiquetas físicas), considerando ^PQ — sem gastar chamadas de API
-        # nas etiquetas das páginas seguintes.
-        subset, subset_sizes = _prefix_covering_quantity(labels, resolved_sizes, grid_count)
+        # etiquetas físicas), considerando ^PQ/split — sem gastar chamadas
+        # de API nas etiquetas das páginas seguintes.
+        subset, subset_sizes = _prefix_covering_quantity(
+            labels, resolved_sizes, grid_count, params.split_multiplier
+        )
         rendered_labels = render_all(subset, subset_sizes, dpmm, renderer, on_progress)
-        placements = engine.place_sequence(_expand_by_quantity(subset, rendered_labels))
+        placements = engine.place_sequence(_expand_rendered(subset, rendered_labels, params))
 
     image = build_preview_image(sheet, placements)
     buffer = io.BytesIO()
@@ -345,6 +397,6 @@ def render_output_pdf(
         placements = engine.place_single(rendered, params.pages)
     else:
         rendered_labels = render_all(labels, resolved_sizes, dpmm, renderer, on_progress)
-        placements = engine.place_sequence(_expand_by_quantity(labels, rendered_labels))
+        placements = engine.place_sequence(_expand_rendered(labels, rendered_labels, params))
 
     return build_pdf(placements, sheet, output_path)

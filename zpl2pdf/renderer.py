@@ -8,6 +8,7 @@ pública do Labelary (http://api.labelary.com).
 from __future__ import annotations
 
 import hashlib
+import io
 import logging
 import re
 import threading
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+from PIL import Image
 
 from .parser import ZplLabel
 
@@ -39,7 +41,7 @@ _DPI_TO_DPMM = {
 # recusa (HTTP 413 "Maximum label count exceeded") quantidades grandes (ex:
 # exportações de picking com ^PQ56, ^PQ72...). Como só precisamos de UMA
 # imagem por etiqueta distinta (as cópias físicas são resolvidas depois, sem
-# nova chamada à API — ver `webapi._expand_by_quantity`), a quantidade
+# nova chamada à API — ver `webapi._expand_rendered`), a quantidade
 # original é neutralizada antes de enviar/cachear.
 _PQ_QUANTITY_PATTERN = re.compile(r"(\^PQ)\d+", re.IGNORECASE)
 
@@ -117,6 +119,88 @@ class RenderedLabel:
     width_mm: float
     height_mm: float
     label_index: int
+
+
+# Abaixo deste limiar de "branco" (0-255, escala de cinza) um pixel conta como
+# fundo vazio; acima desta fração de pixels em branco, a célula inteira é
+# descartada por não ter conteúdo desenhado.
+_BLANK_WHITE_THRESHOLD = 250
+_BLANK_CELL_RATIO = 0.995
+
+
+def _is_blank_cell(cell: Image.Image) -> bool:
+    """True se a célula não tem conteúdo visual (quase só fundo branco).
+
+    Usado para descartar posições vazias de uma grade parcialmente
+    preenchida (ex: a última folha de um lote, com menos etiquetas do que
+    cabem na grade — ver `split_rendered_label`)."""
+    histogram = cell.convert("L").histogram()
+    total_pixels = sum(histogram)
+    if total_pixels == 0:
+        return True
+    white_pixels = sum(histogram[_BLANK_WHITE_THRESHOLD:])
+    return (white_pixels / total_pixels) >= _BLANK_CELL_RATIO
+
+
+def split_rendered_label(
+    rendered: RenderedLabel, cols: int, rows: int
+) -> list[RenderedLabel]:
+    """Recorta uma etiqueta renderizada em uma grade `cols x rows` de
+    sub-etiquetas, descartando células em branco.
+
+    Alguns exportadores (ex: a exportação de etiquetas de picking da
+    Shopee) agrupam várias etiquetas físicas distintas numa única imagem
+    `~DG`/`^GF` — uma "folha" pré-montada pela origem, sem nenhum comando
+    ZPL indicando a quantidade (ela só existe nos pixels da imagem). Esta
+    função assume uma grade fixa e uniforme dentro da imagem renderizada
+    (`cols` colunas x `rows` linhas, todas do mesmo tamanho) — comum nesse
+    tipo de exportação — e descarta células vazias (tipicamente a última
+    "folha" de um lote, só parcialmente preenchida).
+
+    Com `cols <= 1 and rows <= 1` (padrão), devolve `[rendered]` sem
+    modificar nada — comportamento idêntico a antes desta funcionalidade."""
+    if cols <= 1 and rows <= 1:
+        return [rendered]
+    if cols < 1 or rows < 1:
+        raise RenderError(f"split_grid_cols/rows devem ser >= 1 (recebido {cols}x{rows}).")
+
+    image = Image.open(io.BytesIO(rendered.png_bytes))
+    width_px, height_px = image.size
+    cell_width_px = width_px // cols
+    cell_height_px = height_px // rows
+    cell_width_mm = rendered.width_mm / cols
+    cell_height_mm = rendered.height_mm / rows
+
+    pieces: list[RenderedLabel] = []
+    for row in range(rows):
+        for col in range(cols):
+            box = (
+                col * cell_width_px,
+                row * cell_height_px,
+                (col + 1) * cell_width_px,
+                (row + 1) * cell_height_px,
+            )
+            cell = image.crop(box)
+            if _is_blank_cell(cell):
+                continue
+            buffer = io.BytesIO()
+            cell.save(buffer, format="PNG")
+            pieces.append(
+                RenderedLabel(
+                    png_bytes=buffer.getvalue(),
+                    width_mm=cell_width_mm,
+                    height_mm=cell_height_mm,
+                    label_index=rendered.label_index,
+                )
+            )
+
+    if not pieces:
+        raise RenderError(
+            f"Etiqueta {rendered.label_index + 1}: a grade {cols}x{rows} não encontrou "
+            "nenhuma célula com conteúdo — verifique se cols/rows correspondem à grade "
+            "real da imagem."
+        )
+    return pieces
 
 
 class LabelRenderer(ABC):

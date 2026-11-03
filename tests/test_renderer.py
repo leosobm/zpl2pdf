@@ -1,9 +1,17 @@
+import io
 from unittest.mock import patch
 
 import pytest
+from PIL import Image
 
 from zpl2pdf.parser import ZplLabel
-from zpl2pdf.renderer import LabelaryRenderer, RateLimiter, RenderError
+from zpl2pdf.renderer import (
+    LabelaryRenderer,
+    RateLimiter,
+    RenderedLabel,
+    RenderError,
+    split_rendered_label,
+)
 
 
 class NoOpRateLimiter(RateLimiter):
@@ -111,6 +119,61 @@ def test_render_normalizes_pq_quantity_to_1_before_calling_labelary(no_real_slee
     sent_body = mock_post.call_args.kwargs["data"].decode("utf-8")
     assert "^PQ56" not in sent_body
     assert "^PQ1,0,1,Y" in sent_body
+
+
+def _make_grid_png(
+    cols: int, rows: int, filled_cells: set[tuple[int, int]], cell_px: int = 20
+) -> bytes:
+    """Desenha um PNG `cols x rows` onde cada `(row, col)` em `filled_cells`
+    recebe um quadrado preto (conteúdo) e as demais ficam brancas (em
+    branco) — simula a "folha" composta de uma exportação tipo Shopee."""
+    width_px, height_px = cols * cell_px, rows * cell_px
+    image = Image.new("RGB", (width_px, height_px), "white")
+    for row, col in filled_cells:
+        for y in range(row * cell_px, (row + 1) * cell_px):
+            for x in range(col * cell_px, (col + 1) * cell_px):
+                image.putpixel((x, y), (0, 0, 0))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_split_rendered_label_is_noop_without_grid_params():
+    rendered = RenderedLabel(png_bytes=b"whatever", width_mm=100.0, height_mm=150.0, label_index=0)
+    pieces = split_rendered_label(rendered, cols=1, rows=1)
+    assert pieces == [rendered]
+
+
+def test_split_rendered_label_discards_blank_cells_and_keeps_filled_ones():
+    # Grade 2x2, só as células (0,0) e (1,1) (diagonal) têm conteúdo.
+    png_bytes = _make_grid_png(cols=2, rows=2, filled_cells={(0, 0), (1, 1)})
+    rendered = RenderedLabel(png_bytes=png_bytes, width_mm=100.0, height_mm=150.0, label_index=3)
+
+    pieces = split_rendered_label(rendered, cols=2, rows=2)
+
+    assert len(pieces) == 2
+    for piece in pieces:
+        assert piece.width_mm == pytest.approx(50.0)
+        assert piece.height_mm == pytest.approx(75.0)
+        assert piece.label_index == 3
+
+
+def test_split_rendered_label_all_blank_raises_render_error():
+    png_bytes = _make_grid_png(cols=2, rows=2, filled_cells=set())
+    rendered = RenderedLabel(png_bytes=png_bytes, width_mm=100.0, height_mm=150.0, label_index=0)
+
+    with pytest.raises(RenderError):
+        split_rendered_label(rendered, cols=2, rows=2)
+
+
+def test_split_rendered_label_full_grid_keeps_all_cells():
+    filled = {(row, col) for row in range(5) for col in range(2)}
+    png_bytes = _make_grid_png(cols=2, rows=5, filled_cells=filled)
+    rendered = RenderedLabel(png_bytes=png_bytes, width_mm=101.6, height_mm=152.4, label_index=0)
+
+    pieces = split_rendered_label(rendered, cols=2, rows=5)
+
+    assert len(pieces) == 10
 
 
 def test_rate_limiter_spaces_calls_at_configured_rate():

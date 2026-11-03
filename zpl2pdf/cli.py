@@ -31,7 +31,7 @@ from .config import ConfigError, PrintConfig, SheetConfig, resolve_sheet_size
 from .layout import LOW_SCALE_WARNING_THRESHOLD, LayoutEngine, calculate_grid, resolve_label_size_mm
 from .parser import ZplParseError, parse_zpl_file
 from .pdf_builder import build_pdf
-from .renderer import LabelCache, LabelaryRenderer, RenderError, dpi_to_dpmm
+from .renderer import LabelCache, LabelaryRenderer, RenderError, dpi_to_dpmm, split_rendered_label
 
 logger = logging.getLogger("zpl2pdf")
 
@@ -53,6 +53,8 @@ DEFAULTS: dict[str, Any] = {
     "label_width": None,
     "label_height": None,
     "cache_dir": "cache",
+    "split_grid_cols": 1,
+    "split_grid_rows": 1,
 }
 
 
@@ -95,6 +97,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dpi", type=int)
     parser.add_argument("--label-width", type=float, dest="label_width")
     parser.add_argument("--label-height", type=float, dest="label_height")
+    parser.add_argument(
+        "--split-grid-cols", type=int, dest="split_grid_cols",
+        help="Quando cada etiqueta do arquivo já é uma 'folha' com várias etiquetas físicas "
+        "desenhadas dentro da mesma imagem numa grade fixa (ex: exportações de picking da "
+        "Shopee) — quantas colunas tem essa grade. Padrão 1 (sem efeito).",
+    )
+    parser.add_argument(
+        "--split-grid-rows", type=int, dest="split_grid_rows",
+        help="Mesma ideia de --split-grid-cols, mas para o número de linhas da grade dentro "
+        "da imagem. Padrão 1 (sem efeito).",
+    )
     parser.add_argument("--cache-dir", dest="cache_dir")
     parser.add_argument("--no-cache", action="store_true", dest="no_cache")
     parser.add_argument(
@@ -241,11 +254,20 @@ def run(argv: Optional[list[str]] = None) -> int:
                 f"--multi-mode paginate (distribui em páginas de --labels-per-page etiquetas cada)."
             )
 
-        total_physical = sum(label.pq_quantity for label in labels)
-        if total_physical != len(labels):
+        split_cols = int(cfg["split_grid_cols"])
+        split_rows = int(cfg["split_grid_rows"])
+        if split_cols > 1 or split_rows > 1:
+            logger.info(
+                "Cada etiqueta do arquivo será recortada numa grade de %d x %d sub-etiquetas "
+                "(células em branco são descartadas).",
+                split_cols, split_rows,
+            )
+
+        total_physical_blocks = sum(label.pq_quantity for label in labels)
+        if total_physical_blocks != len(labels):
             logger.info(
                 "Arquivo contém %d etiquetas distintas, %d etiquetas físicas (considerando ^PQ).",
-                len(labels), total_physical,
+                len(labels), total_physical_blocks,
             )
         else:
             logger.info("Arquivo contém %d etiquetas distintas.", len(labels))
@@ -263,9 +285,16 @@ def run(argv: Optional[list[str]] = None) -> int:
                 i + 1, len(labels), width_mm, height_mm, label.pq_quantity,
             )
             rendered = renderer.render(label, dpmm, width_mm, height_mm)
-            expanded_rendered.extend([rendered] * label.pq_quantity)
+            for piece in split_rendered_label(rendered, split_cols, split_rows):
+                expanded_rendered.extend([piece] * label.pq_quantity)
 
-        ref_width_mm, ref_height_mm = resolved_sizes[0]
+        # Grade/escala usam o tamanho de UMA sub-etiqueta (depois do recorte), já
+        # que é isso que acaba posicionado em cada célula — e o total real (já
+        # descontadas as células em branco da grade interna) está disponível aqui,
+        # sem precisar de uma estimativa por cima como na API web.
+        ref_width_mm = resolved_sizes[0][0] / split_cols
+        ref_height_mm = resolved_sizes[0][1] / split_rows
+        total_physical = len(expanded_rendered)
 
         if multi_mode == "fit-one-page":
             grid_count = total_physical
@@ -276,7 +305,9 @@ def run(argv: Optional[list[str]] = None) -> int:
         logger.info("Grade calculada: %d col x %d lin (%d célula(s)).", cols, rows, cols * rows)
 
         engine = LayoutEngine(sheet, cols, rows, stretch=stretch)
-        worst_scale = min(engine.fit_scale_for(w, h) for w, h in resolved_sizes)
+        worst_scale = min(
+            engine.fit_scale_for(w / split_cols, h / split_rows) for w, h in resolved_sizes
+        )
         logger.info(
             "Célula: %.1fx%.1fmm · modo %s · pior escala: %.0f%%.",
             engine.cell_width_mm, engine.cell_height_mm,

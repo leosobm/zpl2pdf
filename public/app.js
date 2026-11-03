@@ -122,6 +122,8 @@
     fd.append("fallback_width_mm", document.getElementById("fallback-width").value);
     fd.append("fallback_height_mm", document.getElementById("fallback-height").value);
     fd.append("stretch", document.getElementById("stretch").checked ? "true" : "false");
+    fd.append("split_grid_cols", document.getElementById("split-cols").value);
+    fd.append("split_grid_rows", document.getElementById("split-rows").value);
 
     if (isMultiMode()) {
       const mode = selectedMultiMode();
@@ -170,7 +172,9 @@
     document.getElementById("labels-per-page-multi-field").hidden = mode !== "paginate";
     if (mode === "fit-one-page") {
       document.getElementById("multi-caption").textContent =
-        `Grade dimensionada para as ${totalPhysicalQuantity} etiquetas (${totalLabelsInFile} produtos distintos), em 1 página.`;
+        `Grade dimensionada para as ${totalPhysicalQuantity} etiquetas (${totalLabelsInFile} blocos ` +
+        "no arquivo), em 1 página — se usar a divisão em sub-etiquetas acima, esse número pode " +
+        "ser maior na prática.";
     }
   }
 
@@ -207,9 +211,15 @@
       showInfo(html);
 
       if (data.mode === "paginate") {
+        const prefix = data.is_output_estimated ? "até " : "";
+        const verb = data.is_output_estimated ? "Até" : "Serão";
         document.getElementById("multi-caption").textContent =
-          `📄 Serão geradas ${data.computed_pages} página(s) para cobrir as ` +
-          `${data.total_labels_output} etiquetas (${totalLabelsInFile} produtos distintos).`;
+          `📄 ${verb} geradas ${prefix}${data.computed_pages} página(s) para cobrir ` +
+          `${prefix}${data.total_labels_output} etiquetas (${totalLabelsInFile} blocos no arquivo).` +
+          (data.is_output_estimated
+            ? " O total exato só é conhecido depois de gerar (algumas células da grade " +
+              "interna da imagem podem estar em branco)."
+            : "");
       }
     } catch (err) {
       document.getElementById("preview-btn").disabled = true;
@@ -310,6 +320,8 @@
     "labels-per-page-single",
     "pages",
     "labels-per-page-multi",
+    "split-cols",
+    "split-rows",
   ];
   watchedInputIds.forEach((id) => {
     const el = document.getElementById(id);
