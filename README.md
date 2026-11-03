@@ -203,6 +203,31 @@ valor exato só é conhecido ao final de `render_output_pdf`. Com
 dessa funcionalidade — sem nenhum efeito em arquivos que não usam esse
 padrão.
 
+### Canal de envio (predefinições)
+
+Cada marketplace costuma exportar etiquetas com um padrão bem definido de
+tamanho de folha, margens, espaçamento e quantidade por página — em vez de
+redigitar os mesmos valores toda vez, selecione o canal e esses campos são
+pré-preenchidos de uma vez (continuam editáveis depois, nos três
+front-ends). Hoje há predefinições para **Mercado Livre**, **Shopee** e
+**Magalu** — todas usam folha 100x150mm, retrato, 203dpi, distribuído em
+várias páginas e 3 etiquetas/página; o que muda entre elas são margens,
+espaçamento, o fallback de tamanho e (só na Shopee) `--split-grid` ligado
+por padrão, já que o padrão de picking dela é o caso descrito na seção
+anterior. **Outro** (padrão) não aplica nenhuma predefinição — preencha
+tudo manualmente, como antes dessa funcionalidade existir.
+
+Na CLI, use `--channel mercado_livre` / `--channel shopee` / `--channel
+magalu` (ou `--channel outro`, equivalente a omitir a flag); qualquer outra
+flag explícita, ou um valor presente no `--config`, continua tendo
+prioridade sobre o que o canal predefine (`zpl2pdf.cli.merge_config`). Na
+UI (Streamlit e web), é um seletor "Canal de envio" no topo da
+configuração. Os valores de cada canal estão em
+[`zpl2pdf/channel_presets.py`](zpl2pdf/channel_presets.py) (Streamlit/CLI)
+e, duplicados em JavaScript puro para funcionar inteiramente no navegador,
+em `CHANNEL_PRESETS` dentro de [`public/app.js`](public/app.js) — ao
+ajustar um canal, atualize os dois lugares.
+
 ### Usando um arquivo de configuração
 
 Em vez de repetir todos os parâmetros na linha de comando, use `--config`
@@ -213,9 +238,10 @@ python -m zpl2pdf.cli --input examples\label_30x20mm.zpl --output saida.pdf --co
 ```
 
 Qualquer argumento passado explicitamente na CLI tem prioridade sobre o
-valor do arquivo de config, que por sua vez tem prioridade sobre os
-defaults internos (A4, retrato, 1 etiqueta/página, 1 página, margens de
-10mm, gap de 2mm, 203dpi).
+valor do arquivo de config, que por sua vez tem prioridade sobre a
+predefinição de `--channel` (se houver), que por sua vez tem prioridade
+sobre os defaults internos (A4, retrato, 1 etiqueta/página, 1 página,
+margens de 10mm, gap de 2mm, 203dpi).
 
 ### Etiquetas sem `^PW`/`^LL` (fallback manual)
 
@@ -278,16 +304,21 @@ streamlit run app.py
 
 Isso abre a interface em `http://localhost:8501`. Fluxo de uso:
 
-1. Faça upload de um arquivo `.zpl`. O número de etiquetas distintas
+1. (Opcional) Escolha o **"Canal de envio"** no topo da sidebar (Mercado
+   Livre, Shopee, Magalu ou "Outro") para pré-preencher folha, margens,
+   espaçamento, dpi e etiquetas por página com os valores típicos desse
+   canal — ver "Canal de envio (predefinições)" acima. Os campos continuam
+   editáveis depois.
+2. Faça upload de um arquivo `.zpl`. O número de etiquetas distintas
    detectadas é exibido imediatamente — e, se alguma trouxer `^PQ` com
    quantidade diferente de 1, o total de etiquetas físicas também aparece
    (ex: "10 etiquetas distintas — 58 etiquetas físicas ao todo").
-2. Ajuste os parâmetros na sidebar (tamanho de folha, orientação, margens,
+3. Ajuste os parâmetros na sidebar (tamanho de folha, orientação, margens,
    gaps, dpi, o tamanho de fallback da etiqueta, o checkbox **"Esticar
    para preencher célula"** e, se o arquivo usar o padrão descrito em
    "Etiquetas agrupadas numa única imagem" abaixo, **"Esta etiqueta é uma
    folha com várias etiquetas agrupadas"**).
-3. Dependendo do arquivo:
+4. Dependendo do arquivo:
    - **Uma etiqueta**: informe quantas cópias por página e quantas
      páginas.
    - **Várias etiquetas distintas**: escolha entre **"Caber tudo em 1
@@ -295,16 +326,16 @@ Isso abre a interface em `http://localhost:8501`. Fluxo de uso:
      etiquetas) e **"Distribuir em várias páginas"** (informe só
      "Etiquetas por página"; o campo de páginas some, substituído por uma
      mensagem como "Serão geradas 4 páginas para cobrir as 20 etiquetas").
-4. A grade calculada e a escala resultante são exibidas assim que os
+5. A grade calculada e a escala resultante são exibidas assim que os
    parâmetros são válidos — a quantidade pedida é sempre respeitada,
    redimensionando a(s) etiqueta(s) para caber. Se a escala calculada
    ficar abaixo de 50% do tamanho original (a pior entre todas as
    etiquetas do arquivo, quando há mais de uma), um aviso não bloqueante
    alerta que o código de barras pode ficar difícil de ler fisicamente.
-5. Clique em **"🔍 Prévia da 1ª página"** para conferir a grade montada
+6. Clique em **"🔍 Prévia da 1ª página"** para conferir a grade montada
    antes de gerar o PDF completo — no modo "paginar", a prévia renderiza
    só as etiquetas da 1ª página, sem gastar chamadas de API nas restantes.
-6. Clique em **"📄 Gerar PDF"** para montar todas as páginas e baixar o
+7. Clique em **"📄 Gerar PDF"** para montar todas as páginas e baixar o
    resultado pelo botão de download.
 
 Com várias etiquetas distintas ainda não cacheadas, uma barra de progresso
@@ -397,6 +428,7 @@ o pacote `zpl2pdf/` (fora da pasta `api/`) vá junto no bundle da função.
 | `--input` | Caminho do arquivo `.zpl` de entrada (1 ou várias etiquetas; obrigatório) | — |
 | `--output` | Caminho do PDF de saída (obrigatório) | — |
 | `--config` | Arquivo `.yaml`/`.yml`/`.json` com os parâmetros abaixo | — |
+| `--channel` | `mercado_livre`, `shopee`, `magalu` ou `outro` — predefine folha/margens/gap/dpi/modo/etiquetas-por-página do canal (qualquer flag abaixo passada explicitamente, ou um valor no `--config`, tem prioridade sobre isso) | `outro` (nenhuma predefinição) |
 | `--sheet-size` | Preset (`A4`, `Letter`) ou `LARGURAxALTURA` em mm (ex: `100x150`) | `A4` |
 | `--orientation` | `portrait` ou `landscape` | `portrait` |
 | `--labels-per-page` | Etiqueta única: cópias por página. Múltiplas + `paginate`: etiquetas por página (páginas calculadas automaticamente) | `1` |
@@ -407,6 +439,7 @@ o pacote `zpl2pdf/` (fora da pasta `api/`) vá junto no bundle da função.
 | `--dpi` | Resolução da impressora (203, 300, ...) | `203` |
 | `--label-width` / `--label-height` | Tamanho em mm, usado só se o ZPL não definir `^PW`/`^LL` | — |
 | `--stretch` | Estica a etiqueta para preencher 100% da célula (ignora a proporção original) | desligado (mantém proporção, centralizada) |
+| `--split-grid` | Detecta e recorta automaticamente etiquetas agrupadas numa única imagem (ex: picking da Shopee) — ver seção acima | desligado |
 | `--cache-dir` | Pasta do cache local de imagens renderizadas | `cache` |
 | `--no-cache` | Desativa o cache | desligado |
 | `-v`, `--verbose` | Log detalhado (debug) | desligado |
@@ -536,6 +569,12 @@ arquivo malformado/inexistente), o layout/grade e a orquestração
   `analyze()` não inclui a divisão (marcado como estimativa, já que só é
   possível depois de renderizar), e o PDF final (`render_output_pdf`)
   reflete o total real já descontadas as células em branco.
+- `channel_presets`: as 3 predefinições têm os campos comuns (folha,
+  orientação, dpi, modo, etiquetas/página) e os específicos de cada canal
+  corretos; `cli.merge_config`: `--channel` aplica a predefinição, qualquer
+  flag explícita (ex: `--dpi`) ou valor do `--config` continua vencendo, e
+  `split_grid` especificamente respeita um `false` explícito no `--config`
+  por cima de um canal que liga por padrão (Shopee) — não é um simples OR.
 
 ## Exemplos incluídos
 

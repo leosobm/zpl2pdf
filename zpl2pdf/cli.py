@@ -27,6 +27,7 @@ from typing import Any, Optional
 
 import yaml
 
+from .channel_presets import CHANNEL_CHOICES, CHANNEL_PRESETS
 from .config import ConfigError, PrintConfig, SheetConfig, resolve_sheet_size
 from .layout import LOW_SCALE_WARNING_THRESHOLD, LayoutEngine, calculate_grid, resolve_label_size_mm
 from .parser import ZplParseError, parse_zpl_file
@@ -74,6 +75,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", required=True, help="Caminho do arquivo .zpl de entrada.")
     parser.add_argument("--output", required=True, help="Caminho do PDF de saída.")
     parser.add_argument("--config", help="Arquivo de configuração YAML ou JSON (opcional).")
+    parser.add_argument(
+        "--channel", choices=CHANNEL_CHOICES, default=None,
+        help="Canal de envio — pré-preenche folha, margens, espaçamento, dpi, modo de "
+        "distribuição e etiquetas por página com os valores mais comuns do canal; qualquer "
+        "outra flag explícita (ou o --config) continua tendo prioridade sobre isso. "
+        "'outro' (ou omitir) não aplica nenhuma predefinição.",
+    )
     parser.add_argument(
         "--sheet-size", dest="sheet_size", help="Preset (A4, Letter) ou 'LARGURAxALTURA' em mm."
     )
@@ -139,8 +147,31 @@ def load_config_file(path: str | Path) -> dict[str, Any]:
 
 
 def merge_config(args: argparse.Namespace, file_config: dict[str, Any]) -> dict[str, Any]:
-    """Prioridade: argumento explícito de CLI > arquivo de config > defaults."""
+    """Prioridade: argumento explícito de CLI > arquivo de config > predefinição de
+    `--channel` (se houver) > defaults."""
     merged = dict(DEFAULTS)
+
+    channel_key = getattr(args, "channel", None) or file_config.get("channel")
+    preset = CHANNEL_PRESETS.get(channel_key) if channel_key else None
+    if preset is not None:
+        merged.update(
+            {
+                "sheet_size": f"{preset.sheet_width_mm:g}x{preset.sheet_height_mm:g}",
+                "orientation": preset.orientation,
+                "margin_top": preset.margin_top_mm,
+                "margin_bottom": preset.margin_bottom_mm,
+                "margin_left": preset.margin_left_mm,
+                "margin_right": preset.margin_right_mm,
+                "gap_x": preset.gap_x_mm,
+                "gap_y": preset.gap_y_mm,
+                "dpi": preset.dpi,
+                "label_width": preset.fallback_width_mm,
+                "label_height": preset.fallback_height_mm,
+                "multi_mode": preset.multi_mode,
+                "labels_per_page": preset.labels_per_page,
+            }
+        )
+
     merged.update(file_config)
     for key in DEFAULTS:
         cli_value = getattr(args, key, None)
@@ -149,7 +180,20 @@ def merge_config(args: argparse.Namespace, file_config: dict[str, Any]) -> dict[
     if getattr(args, "no_cache", False):
         merged["cache_dir"] = None
     merged["stretch"] = bool(args.stretch) or bool(file_config.get("stretch", False))
-    merged["split_grid"] = bool(args.split_grid) or bool(file_config.get("split_grid", False))
+
+    # split_grid não é um simples OR: diferente de "stretch", um canal pode
+    # LIGAR a predefinição (Shopee) — então um "false" explícito no arquivo
+    # de config precisa conseguir desligar de volta, não só "true" conseguir
+    # ligar. "--split-grid" na CLI (store_true) só sabe ligar, nunca desligar.
+    if "split_grid" in file_config:
+        merged["split_grid"] = bool(file_config["split_grid"])
+    elif preset is not None:
+        merged["split_grid"] = preset.split_grid
+    else:
+        merged["split_grid"] = False
+    if bool(args.split_grid):
+        merged["split_grid"] = True
+
     return merged
 
 

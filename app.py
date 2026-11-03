@@ -25,6 +25,7 @@ from typing import Optional
 
 import streamlit as st
 
+from zpl2pdf.channel_presets import CHANNEL_CHOICES, CHANNEL_PRESETS, channel_label
 from zpl2pdf.config import ConfigError
 from zpl2pdf.parser import ZplParseError, parse_zpl_content
 from zpl2pdf.renderer import RenderError
@@ -68,40 +69,85 @@ st.caption(
 # ---------------------------------------------------------------------------
 st.sidebar.header("Configuração")
 
-sheet_size_choice = st.sidebar.selectbox("Tamanho da folha", ["A4", "Letter", "Custom"])
+channel_key = st.sidebar.selectbox(
+    "Canal de envio",
+    CHANNEL_CHOICES,
+    format_func=channel_label,
+    key="channel",
+    help="Pré-preenche folha, margens, espaçamento, DPI e etiquetas por página com os "
+    "valores mais comuns de cada canal — os campos abaixo continuam editáveis depois. "
+    "\"Outro\" não aplica nenhuma predefinição (preencha tudo manualmente).",
+)
+if st.session_state.get("_applied_channel") != channel_key:
+    st.session_state["_applied_channel"] = channel_key
+    preset = CHANNEL_PRESETS.get(channel_key)
+    if preset is not None:
+        st.session_state["sheet_size_choice"] = "Custom"
+        st.session_state["sheet_width_mm"] = preset.sheet_width_mm
+        st.session_state["sheet_height_mm"] = preset.sheet_height_mm
+        st.session_state["orientation"] = preset.orientation
+        st.session_state["margin_top"] = preset.margin_top_mm
+        st.session_state["margin_bottom"] = preset.margin_bottom_mm
+        st.session_state["margin_left"] = preset.margin_left_mm
+        st.session_state["margin_right"] = preset.margin_right_mm
+        st.session_state["gap_x"] = preset.gap_x_mm
+        st.session_state["gap_y"] = preset.gap_y_mm
+        st.session_state["dpi"] = preset.dpi
+        st.session_state["fallback_width_input"] = preset.fallback_width_mm
+        st.session_state["fallback_height_input"] = preset.fallback_height_mm
+        st.session_state["split_grid"] = preset.split_grid
+        st.session_state["multi_mode_value"] = preset.multi_mode
+        st.session_state["labels_per_page_single"] = preset.labels_per_page
+        st.session_state["labels_per_page_multi"] = preset.labels_per_page
+    st.rerun()
+
+sheet_size_choice = st.sidebar.selectbox(
+    "Tamanho da folha", ["A4", "Letter", "Custom"], key="sheet_size_choice"
+)
 if sheet_size_choice == "Custom":
     c1, c2 = st.sidebar.columns(2)
-    sheet_width_mm = c1.number_input("Largura folha (mm)", min_value=10.0, value=210.0, step=1.0)
-    sheet_height_mm = c2.number_input("Altura folha (mm)", min_value=10.0, value=297.0, step=1.0)
+    sheet_width_mm = c1.number_input(
+        "Largura folha (mm)", min_value=10.0, value=210.0, step=1.0, key="sheet_width_mm"
+    )
+    sheet_height_mm = c2.number_input(
+        "Altura folha (mm)", min_value=10.0, value=297.0, step=1.0, key="sheet_height_mm"
+    )
     sheet_size = f"{sheet_width_mm}x{sheet_height_mm}"
 else:
     sheet_size = sheet_size_choice
 
 orientation = st.sidebar.selectbox(
-    "Orientação", ["portrait", "landscape"], format_func=lambda v: "Retrato" if v == "portrait" else "Paisagem"
+    "Orientação",
+    ["portrait", "landscape"],
+    format_func=lambda v: "Retrato" if v == "portrait" else "Paisagem",
+    key="orientation",
 )
 
 st.sidebar.subheader("Margens (mm)")
 mc1, mc2 = st.sidebar.columns(2)
-margin_top = mc1.number_input("Superior", min_value=0.0, value=10.0, step=1.0)
-margin_bottom = mc2.number_input("Inferior", min_value=0.0, value=10.0, step=1.0)
+margin_top = mc1.number_input("Superior", min_value=0.0, value=10.0, step=1.0, key="margin_top")
+margin_bottom = mc2.number_input("Inferior", min_value=0.0, value=10.0, step=1.0, key="margin_bottom")
 mc3, mc4 = st.sidebar.columns(2)
-margin_left = mc3.number_input("Esquerda", min_value=0.0, value=10.0, step=1.0)
-margin_right = mc4.number_input("Direita", min_value=0.0, value=10.0, step=1.0)
+margin_left = mc3.number_input("Esquerda", min_value=0.0, value=10.0, step=1.0, key="margin_left")
+margin_right = mc4.number_input("Direita", min_value=0.0, value=10.0, step=1.0, key="margin_right")
 
 st.sidebar.subheader("Espaçamento entre etiquetas (mm)")
 sc1, sc2 = st.sidebar.columns(2)
-gap_x = sc1.number_input("Horizontal", min_value=0.0, value=2.0, step=0.5)
-gap_y = sc2.number_input("Vertical", min_value=0.0, value=2.0, step=0.5)
+gap_x = sc1.number_input("Horizontal", min_value=0.0, value=2.0, step=0.5, key="gap_x")
+gap_y = sc2.number_input("Vertical", min_value=0.0, value=2.0, step=0.5, key="gap_y")
 
 st.sidebar.subheader("Impressão")
-dpi = st.sidebar.selectbox("DPI", [203, 300], index=0)
+dpi = st.sidebar.selectbox("DPI", [203, 300], index=0, key="dpi")
 
 st.sidebar.subheader("Fallback de tamanho da etiqueta (mm)")
 st.sidebar.caption("Usado somente se o ZPL não definir ^PW/^LL. Deixe em 0 para não definir.")
 fc1, fc2 = st.sidebar.columns(2)
-fallback_width_input = fc1.number_input("Largura", min_value=0.0, value=0.0, step=1.0)
-fallback_height_input = fc2.number_input("Altura", min_value=0.0, value=0.0, step=1.0)
+fallback_width_input = fc1.number_input(
+    "Largura", min_value=0.0, value=0.0, step=1.0, key="fallback_width_input"
+)
+fallback_height_input = fc2.number_input(
+    "Altura", min_value=0.0, value=0.0, step=1.0, key="fallback_height_input"
+)
 fallback_width_mm: Optional[float] = fallback_width_input if fallback_width_input > 0 else None
 fallback_height_mm: Optional[float] = fallback_height_input if fallback_height_input > 0 else None
 
@@ -118,6 +164,7 @@ st.sidebar.subheader("Dividir imagem em sub-etiquetas")
 split_grid = st.sidebar.checkbox(
     "Esta etiqueta é uma folha com várias etiquetas agrupadas",
     value=False,
+    key="split_grid",
     help="Marque quando cada etiqueta do arquivo já é uma \"folha\" com várias etiquetas "
     "físicas desenhadas dentro da mesma imagem (comum em exportações de picking da Shopee) "
     "— não existe comando ZPL indicando essa quantidade, só os pixels da imagem. O sistema "
@@ -170,26 +217,35 @@ if num_labels == 1:
     # ------------------------------------------------------------
     st.subheader("Quantidade")
     qc1, qc2 = st.columns(2)
-    labels_per_page = qc1.number_input("Etiquetas por página", min_value=1, value=12, step=1)
+    labels_per_page = qc1.number_input(
+        "Etiquetas por página", min_value=1, value=12, step=1, key="labels_per_page_single"
+    )
     pages = qc2.number_input("Número de páginas", min_value=1, value=1, step=1)
 elif num_labels is not None and num_labels > 1:
     # ------------------------------------------------------------
     # Tipo 2: múltiplas etiquetas distintas — escolher o modo.
     # ------------------------------------------------------------
     st.subheader("Como distribuir as etiquetas")
-    mode_label = st.radio(
+    _multi_mode_labels = {"fit-one-page": "Caber tudo em 1 página", "paginate": "Distribuir em várias páginas"}
+    multi_mode = st.radio(
         "Modo",
-        options=["Caber tudo em 1 página", "Distribuir em várias páginas"],
+        options=list(_multi_mode_labels.keys()),
+        format_func=lambda v: _multi_mode_labels[v],
         horizontal=True,
         label_visibility="collapsed",
+        key="multi_mode_value",
     )
-    multi_mode = "fit-one-page" if mode_label == "Caber tudo em 1 página" else "paginate"
 
     if multi_mode == "paginate":
         max_labels_per_page = total_physical if total_physical is not None else num_labels
+        # Um canal pré-selecionado antes do upload pode ter deixado um valor
+        # (ex: 3) maior que o total real deste arquivo específico — sem o
+        # ajuste, o widget levantaria erro por value > max_value.
+        if st.session_state.get("labels_per_page_multi", 1) > max_labels_per_page:
+            st.session_state["labels_per_page_multi"] = max_labels_per_page
         labels_per_page = st.number_input(
             "Etiquetas por página", min_value=1, max_value=max_labels_per_page,
-            value=min(6, max_labels_per_page), step=1,
+            value=min(6, max_labels_per_page), step=1, key="labels_per_page_multi",
         )
 
 params: Optional[RenderParams] = None

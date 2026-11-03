@@ -11,6 +11,35 @@
   // pode variar por plano/config, então isso não bloqueia o envio.
   const SAFE_UPLOAD_BYTES = 4 * 1024 * 1024;
 
+  // Predefinições por canal de envio — mesmos valores de
+  // `zpl2pdf/channel_presets.py` (duplicado aqui em JS puro para a seleção
+  // de canal funcionar inteiramente no navegador, sem round-trip ao
+  // servidor). Ao alterar um valor aqui, replique a mudança lá também.
+  // "" (Outro) não entra neste objeto — nenhuma predefinição é aplicada.
+  const CHANNEL_PRESETS = {
+    mercado_livre: {
+      sheetWidth: 100, sheetHeight: 150, orientation: "portrait", dpi: 203,
+      marginTop: 10, marginBottom: 10, marginLeft: 0, marginRight: 0,
+      gapX: 0, gapY: 5,
+      fallbackWidth: 60, fallbackHeight: 40,
+      splitGrid: false, multiMode: "paginate", labelsPerPage: 3,
+    },
+    shopee: {
+      sheetWidth: 100, sheetHeight: 150, orientation: "portrait", dpi: 203,
+      marginTop: 0, marginBottom: 0, marginLeft: 0, marginRight: 0,
+      gapX: 0, gapY: 0,
+      fallbackWidth: 100, fallbackHeight: 150,
+      splitGrid: true, multiMode: "paginate", labelsPerPage: 3,
+    },
+    magalu: {
+      sheetWidth: 100, sheetHeight: 150, orientation: "portrait", dpi: 203,
+      marginTop: 10, marginBottom: 10, marginLeft: 0, marginRight: 0,
+      gapX: 0, gapY: 5,
+      fallbackWidth: 60, fallbackHeight: 40,
+      splitGrid: false, multiMode: "paginate", labelsPerPage: 3,
+    },
+  };
+
   function debounce(fn, wait) {
     let timer;
     return (...args) => {
@@ -166,6 +195,35 @@
     status.textContent = message || "";
   }
 
+  /** Aplica os valores de um canal pré-configurado nos campos do formulário.
+   * `""` (Outro) é um no-op deliberado — não sobrescreve nada, deixando o
+   * usuário preencher tudo manualmente (ou mantendo o que já estava lá, se
+   * o canal for trocado para "Outro" depois de outro já ter sido aplicado). */
+  function applyChannelPreset(key) {
+    const preset = CHANNEL_PRESETS[key];
+    if (!preset) return;
+
+    document.getElementById("sheet-size").value = "Custom";
+    document.getElementById("custom-sheet-fields").hidden = false;
+    document.getElementById("sheet-width").value = preset.sheetWidth;
+    document.getElementById("sheet-height").value = preset.sheetHeight;
+    document.getElementById("orientation").value = preset.orientation;
+    document.getElementById("dpi").value = String(preset.dpi);
+    document.getElementById("margin-top").value = preset.marginTop;
+    document.getElementById("margin-bottom").value = preset.marginBottom;
+    document.getElementById("margin-left").value = preset.marginLeft;
+    document.getElementById("margin-right").value = preset.marginRight;
+    document.getElementById("gap-x").value = preset.gapX;
+    document.getElementById("gap-y").value = preset.gapY;
+    document.getElementById("fallback-width").value = preset.fallbackWidth;
+    document.getElementById("fallback-height").value = preset.fallbackHeight;
+    document.getElementById("split-grid").checked = preset.splitGrid;
+    document.getElementById("labels-per-page-single").value = preset.labelsPerPage;
+    document.getElementById("labels-per-page-multi").value = preset.labelsPerPage;
+    const radio = document.querySelector(`input[name="multi-mode"][value="${preset.multiMode}"]`);
+    if (radio) radio.checked = true;
+  }
+
   function updateMultiModeUI() {
     const mode = selectedMultiMode();
     document.getElementById("labels-per-page-multi-field").hidden = mode !== "paginate";
@@ -297,6 +355,12 @@
   }
 
   fileInput.addEventListener("change", onFileSelected);
+
+  document.getElementById("channel").addEventListener("change", () => {
+    applyChannelPreset(document.getElementById("channel").value);
+    updateMultiModeUI();
+    debouncedRefresh();
+  });
 
   document.getElementById("sheet-size").addEventListener("change", () => {
     document.getElementById("custom-sheet-fields").hidden =
